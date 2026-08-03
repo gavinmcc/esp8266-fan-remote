@@ -33,13 +33,9 @@ Install via Arduino Library Manager:
 
 ## Setup
 
-1. Open `fan_remote/fan_remote.ino` in Arduino IDE
-2. Set board to **Generic ESP8266 Module**
-3. Edit the WiFi credentials near the top of the file:
-   ```cpp
-   const char* SSID     = "your-ssid";
-   const char* PASSWORD = "your-password";
-   ```
+1. Copy `fan_remote/secrets.h.example` to `fan_remote/secrets.h` and fill in your WiFi credentials
+2. Open `fan_remote/fan_remote.ino` in Arduino IDE
+3. Set board to **Generic ESP8266 Module**
 4. Flash to the ESP8266
 5. Open Serial Monitor (115200 baud) — the assigned IP is printed on boot
 
