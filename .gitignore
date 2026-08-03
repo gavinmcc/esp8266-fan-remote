@@ -1,3 +1,6 @@
+# WiFi credentials — copy secrets.h.example to secrets.h and fill in
+fan_remote/secrets.h
+
 # Arduino build artifacts
 build/
 *.elf

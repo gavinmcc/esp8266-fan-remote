@@ -28,6 +28,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include "secrets.h"  // copy secrets.h.example → secrets.h and fill in credentials
 
 // ── WiFi ──────────────────────────────────────────────────
 const char* SSID     = WIFI_SSID;
