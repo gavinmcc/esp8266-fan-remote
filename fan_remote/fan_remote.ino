@@ -63,7 +63,14 @@ const char* PASSWORD = WIFI_PASSWORD;
 #define LONG_L    32   // 32×25 = 800µs  (measured 743–848µs)
 #define GAP      320   // 320×25 = 8000µs inter-rep gap
 
-#define REPS     50   // repetitions per button press; OFF (N=4) needs more reps at range than other commands
+// Per-command rep counts. Physical remote sends 4 reps (~60ms total).
+// More reps = more chances for fan to decode a valid frame at range.
+// LIGHT has a dimmer: short burst (~72ms physical) = toggle, long burst = dim.
+//   8 reps = ~144ms, in "short press" territory. N=5 decodes reliably at range so few reps are OK.
+// OFF (N=4) needs many reps: 4 SL symbols before SS creates more decoding failure points at range.
+#define REPS_DEFAULT  25
+#define REPS_LIGHT     4
+#define REPS_OFF      50
 
 // Command N values — re-captured with dedicated RX unit, all five buttons confirmed
 #define CMD_HI     0
@@ -71,6 +78,12 @@ const char* PASSWORD = WIFI_PASSWORD;
 #define CMD_LOW    2
 #define CMD_OFF    4
 #define CMD_LIGHT  5
+
+static int commandReps(int N) {
+    if (N == CMD_OFF)   return REPS_OFF;
+    if (N == CMD_LIGHT) return REPS_LIGHT;
+    return REPS_DEFAULT;
+}
 
 ESP8266WebServer server(80);
 
@@ -128,7 +141,7 @@ static void buildRep(int N) {
 
 static void buildStream(int N) {
     streamClear();
-    for (int r = 0; r < REPS; r++) buildRep(N);
+    for (int r = 0; r < commandReps(N); r++) buildRep(N);
     g_streamLen = (g_streamBit + 7) / 8;
 }
 
@@ -166,14 +179,17 @@ static void ICACHE_RAM_ATTR strobeBit(bool hi, uint32_t us) {
 // Ext PA follows TX-state signal on GDO2 (default IOCFG2 from library Init).
 // This works if FSTXON→TX ext-PA enable response is fast enough for 250µs pulses.
 void sendCommandStrobe(int N, const char* name) {
-    Serial.printf("[TX] %s N=%d strobe %d reps\n", name, N, REPS);
+    int reps = commandReps(N);
+    Serial.printf("[TX] %s N=%d strobe %d reps\n", name, N, reps);
 
     // Use cc1101InitTx() base (IOCFG2=0x56 = inverted PA_PD: GDO2 LOW in IDLE/FSTXON, HIGH in TX).
     // MCSM0=0x00: never auto-calibrate (default 0x18 triggers 720µs cal on every IDLE→STX).
     // With SFSTXON-gating in strobeBit(), PLL is locked via FSTXON before each STX.
     cc1101InitTx();
     ELECHOUSE_cc1101.SpiWriteReg(0x18, 0x00);  // MCSM0: never auto-calibrate
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x62);  // async serial TX
+    // 0x32 = async serial TX (PKT_FORMAT=11), infinite length, no whitening.
+    // GDO0=HIGH → CC1101 OOK=1 → continuous carrier during TX state (vs 0x62=random TX which sends 50% duty-cycle noise).
+    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);
     pinMode(GDO0_TX_PIN, OUTPUT);
     digitalWrite(GDO0_TX_PIN, HIGH);
 
@@ -183,7 +199,7 @@ void sendCommandStrobe(int N, const char* name) {
     delay(5);
     Serial.printf("[TX] post-cal MARC=0x%02X\n", ELECHOUSE_cc1101.SpiReadStatus(0x35));
 
-    for (int r = 0; r < REPS; r++) {
+    for (int r = 0; r < reps; r++) {
         // Header pulse 0: LS with SYNC0 timing
         strobeBit(true,  SYNC0_H * 25);  strobeBit(false, SYNC0_L * 25);
         // Header pulses 1-5: LS LL SL SS LL
@@ -245,9 +261,9 @@ static void ICACHE_RAM_ATTR asmBit(bool hi, uint32_t us) {
 // PLL stays locked via STX throughout; only the PA gates per bit.
 // WiFi runs during the 8 ms inter-rep gap, so the connection stays alive.
 void sendCommandAsync(int N, const char* name) {
-    Serial.printf("[TX] %s N=%d async GDO0 %d reps\n", name, N, REPS);
+    Serial.printf("[TX] %s N=%d async GDO0 %d reps\n", name, N, commandReps(N));
 
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x62);  // async serial TX, infinite (PKT_FORMAT=3, bits 6:5=0b11)
+    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);  // async serial TX (PKT_FORMAT=11), infinite length
 
     pinMode(GDO0_TX_PIN, OUTPUT);
     digitalWrite(GDO0_TX_PIN, LOW);  // PA off while PLL calibrates
@@ -256,7 +272,7 @@ void sendCommandAsync(int N, const char* name) {
     ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
     delayMicroseconds(100);
 
-    for (int r = 0; r < REPS; r++) {
+    for (int r = 0; r < commandReps(N); r++) {
         // Header pulse 0: LS with SYNC0 timing (shorter HIGH measured on physical remote)
         asmBit(true,  SYNC0_H * 25);  asmBit(false, SYNC0_L * 25);
         // Header pulses 1-5: LS LL SL SS LL
@@ -343,7 +359,7 @@ void cc1101InitTx() {
 // MDMCFG2=0x30 (OOK) required — with 0x20 (reserved) gating was broken.
 void sendCommand(int N, const char* name) {
     buildStream(N);
-    Serial.printf("[TX] %s N=%d FIFO mode %d reps %d bytes\n", name, N, REPS, g_streamLen);
+    Serial.printf("[TX] %s N=%d FIFO mode %d reps %d bytes\n", name, N, commandReps(N), g_streamLen);
 
     // Pre-fill first 64 bytes into FIFO, calibrate PLL, start TX
     int firstChunk = min(g_streamLen, 64);
@@ -543,7 +559,7 @@ void handleStatus() {
     out += "  LONG_L="  + String(LONG_L)  + " (" + String(LONG_L*25)  + "us)\n";
     out += "  SHORT_L=" + String(SHORT_L) + " (" + String(SHORT_L*25) + "us)\n";
     out += "  GAP="     + String(GAP)     + " (" + String(GAP*25)     + "us)\n";
-    out += "  REPS="    + String(REPS)    + "\n";
+    out += "  REPS_DEFAULT=" + String(REPS_DEFAULT) + "  REPS_LIGHT=" + String(REPS_LIGHT) + "  REPS_OFF=" + String(REPS_OFF) + "\n";
     byte r0 = ELECHOUSE_cc1101.SpiReadReg(REG_PKTCTRL0);
     byte r1 = ELECHOUSE_cc1101.SpiReadReg(REG_MDMCFG2);
     byte r2 = ELECHOUSE_cc1101.SpiReadReg(REG_FREND0);
@@ -566,6 +582,56 @@ void handleTry() {
     char label[16]; snprintf(label, sizeof(label), "TRY(N=%d)", n);
     sendCommandStrobe(n, label);
     server.send(200, "text/plain", label);
+}
+
+// GET /lighttry?reps=N — send LIGHT (N=5) with exactly N reps, bypassing commandReps().
+// Use to probe the boundary between "toggle" (too few reps = miss) and "hold/dim" (too many).
+// Physical remote sends 4 reps (~84ms). Report what you observe for each value.
+void handleLightTry() {
+    if (!server.hasArg("reps")) { server.send(400, "text/plain", "missing ?reps="); return; }
+    int reps = server.arg("reps").toInt();
+    if (reps < 1 || reps > 250) { server.send(400, "text/plain", "reps must be 1-250"); return; }
+
+    int durationMs = reps * 21;  // ~21ms per rep
+    Serial.printf("[LIGHTTRY] LIGHT N=5, %d reps (~%dms burst)\n", reps, durationMs);
+
+    cc1101InitTx();
+    ELECHOUSE_cc1101.SpiWriteReg(0x18, 0x00);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);
+    pinMode(GDO0_TX_PIN, OUTPUT);
+    digitalWrite(GDO0_TX_PIN, HIGH);
+    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
+    delay(5);
+
+    for (int r = 0; r < reps; r++) {
+        strobeBit(true,  SYNC0_H * 25);  strobeBit(false, SYNC0_L * 25);
+        strobeBit(true,  LONG_H  * 25);  strobeBit(false, SHORT_L * 25);
+        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
+        strobeBit(true,  SHORT_H * 25);  strobeBit(false, LONG_L  * 25);
+        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
+        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
+        for (int i = 0; i < 5; i++) {
+            strobeBit(true, SHORT_H * 25);  strobeBit(false, LONG_L * 25);
+        }
+        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
+        noInterrupts();
+        delayMicroseconds(PLL_LOCK_US);
+        fastStrobe(STROBE_STX);
+        delayMicroseconds(LONG_H * 25);
+        interrupts();
+        noInterrupts(); fastStrobe(STROBE_SIDLE); interrupts();
+        delay(8);
+        noInterrupts(); fastStrobe(STROBE_SFSTXON); interrupts();
+    }
+
+    fastStrobe(STROBE_SIDLE);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
+    pinMode(GDO0_TX_PIN, INPUT);
+    cc1101InitTx();
+
+    char resp[80];
+    snprintf(resp, sizeof(resp), "LIGHT %d reps (~%dms). Toggle? Flicker? No response?", reps, durationMs);
+    server.send(200, "text/plain", resp);
 }
 
 // GET /strobe_test?ms=X — emit 20 STX pulses of X ms each (default 10ms), 10ms off gap.
@@ -907,6 +973,12 @@ void handleRoot() {
         "<a href='/carrier_ook' style='background:#c04000;font-size:0.85em'>OOK GATING TEST (4s alternating)</a>"
         "<a href='/carrier2' style='background:#555;font-size:0.85em'>RF TEST 2-FSK (5s)</a>"
         "<a href='/try?n=3' style='background:#555;font-size:0.85em'>TRY N=3 (unknown cmd)</a>"
+        "<a href='/lighttry?reps=5'   style='background:#404;font-size:0.85em'>LIGHT ON  — 5 reps (~105ms)</a>"
+        "<a href='/try?n=3'           style='background:#404;font-size:0.85em'>LIGHT OFF? — N=3 (unknown cmd)</a>"
+        "<a href='/lighttry?reps=50'  style='background:#404;font-size:0.85em'>LIGHT hold — 50 reps (~1s)</a>"
+        "<a href='/lighttry?reps=100' style='background:#404;font-size:0.85em'>LIGHT hold — 100 reps (~2.1s)</a>"
+        "<a href='/lighttry?reps=150' style='background:#404;font-size:0.85em'>LIGHT hold — 150 reps (~3.2s)</a>"
+        "<a href='/lighttry?reps=200' style='background:#404;font-size:0.85em'>LIGHT hold — 200 reps (~4.2s)</a>"
         "<a href='/status'   style='background:#555;font-size:0.85em'>STATUS / TIMING</a>"
         "<a href='/dumpregs' style='background:#555;font-size:0.85em'>DUMP REGISTERS</a>"
         "</body></html>"
@@ -961,6 +1033,7 @@ void setup() {
     server.on("/fifogate",    handleFifogate);
     server.on("/marctest",    handleMarctest);
     server.on("/try",         handleTry);
+    server.on("/lighttry",    handleLightTry);
     server.on("/status",      handleStatus);
     server.on("/dumpregs",    handleDumpregs);
     server.on("/carrier_ook", handleCarrierOok);
