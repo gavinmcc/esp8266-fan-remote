@@ -4,63 +4,98 @@
 
 | Parameter   | Value       |
 |-------------|-------------|
-| Frequency   | 433.92 MHz  |
+| Frequency   | 303.92 MHz  |
 | Modulation  | OOK / ASK   |
-| Encoding    | PWM (pulse-width modulation) |
-| Bit rate    | ~1.37 kbps (variable — pulse-width encoded) |
+| Encoding    | Position-encoded symbol pairs |
+
+## Symbol Alphabet
+
+Two pulse widths for each phase:
+
+| Name    | Phase | Width (µs) | Measured range |
+|---------|-------|------------|----------------|
+| SHORT_H | HIGH  | ~250       | 195–296 µs     |
+| LONG_H  | HIGH  | ~550       | 400–662 µs     |
+| SHORT_L | LOW   | ~450       | 294–499 µs     |
+| LONG_L  | LOW   | ~790       | 743–848 µs     |
+| GAP     | LOW   | ~8000      | inter-rep gap  |
+
+Each pulse is a (HIGH, LOW) pair. Symbol names use two letters: first = HIGH class, second = LOW class.
+
+| Symbol | HIGH phase | LOW phase |
+|--------|-----------|----------|
+| LS     | LONG_H    | SHORT_L  |
+| LL     | LONG_H    | LONG_L   |
+| SL     | SHORT_H   | LONG_L   |
+| SS     | SHORT_H   | SHORT_L  |
 
 ## Packet Structure
 
-Each button press transmits **4 repetitions** of the following frame, back-to-back with no gap:
+Each button press transmits **4 repetitions** of the following 13-pulse frame, each followed by an 8 ms gap:
 
 ```
-[4 sync pulses] [73 data bits]  ×4
+[Header: 6 pulses] [Data: 7 pulses] [GAP 8ms]   × 4
 ```
 
-There is no inter-repetition gap. The low phase of the last data bit of one repetition flows directly into the high phase of the first sync pulse of the next.
+### Header (6 pulses, fixed for all commands)
 
-## Pulse Timings (µs)
+```
+LS  LS  LL  SL  SS  LL
+```
 
-Measured from captures of a physical UC7070T remote:
+### Data Section (7 pulses, command-dependent)
 
-| Symbol  | HIGH (µs) | LOW (µs) | Total (µs) |
-|---------|-----------|----------|------------|
-| Sync    | ~740      | ~720     | ~1460      |
-| Bit `1` | ~490      | ~235     | ~725       |
-| Bit `0` | ~265      | ~465     | ~730       |
+The command is encoded by **N** — the position (0-indexed) of the `SS` symbol within the 7-pulse data section:
 
-Encoding rule: **long HIGH = 1, short HIGH = 0** (threshold ~380 µs).
+```
+SL × N,  SS,  (tail)
+```
 
-## Data Format (73 bits, MSB first)
+**Tail when N < 5:**
+```
+LL,  SL × (4−N),  SHORT_H (terminal pulse before gap)
+```
 
-Bytes B0–B2 and B5–B7 are fixed across all commands. B3, B4, and B8 carry the command.
+**Tail when N = 5:**
+```
+LONG_H (terminal pulse before gap)
+```
 
-| Byte | Bits   | Fixed value | Notes                     |
-|------|--------|-------------|---------------------------|
-| B0   | 0–7    | `E7`        | DIP switch address byte 0 |
-| B1   | 8–15   | `80`        | DIP switch address byte 1 |
-| B2   | 16–23  | `29`        | DIP switch address byte 2 |
-| B3   | 24–31  | varies      | command byte              |
-| B4   | 32–39  | varies      | command byte              |
-| B5   | 40–47  | `AA`        | fixed protocol byte       |
-| B6   | 48–55  | `55`        | fixed protocol byte       |
-| B7   | 56–63  | `AA`        | fixed protocol byte       |
-| B8   | 64–71  | varies      | command byte              |
-| +1   | 72     | `0`         | trailing stop bit         |
+All 5 valid N values produce identical total bit counts per rep (838 bits at 40 kbaud).
 
-### Command Bytes
+### Command Map
 
-| Command | B3   | B4   | B8   |
-|---------|------|------|------|
-| HI      | `A0` | `4B` | `44` |
-| MED     | `90` | `4C` | `54` |
-| LOW     | `A0` | `4C` | `D0` |
-| OFF     | `90` | `4B` | `C0` |
-| LIGHT   | `80` | `4C` | `28` |
+| Button | N | Data section (7 pulses)          |
+|--------|---|----------------------------------|
+| HI     | 0 | SS LL SL SL SL SL S_term         |
+| MED    | 1 | SL SS LL SL SL SL S_term         |
+| LOW    | 2 | SL SL SS LL SL SL S_term         |
+| OFF    | 4 | SL SL SL SL SS LL S_term         |
+| LIGHT  | 5 | SL SL SL SL SL SS L_term         |
 
-### Adapting for a Different DIP Address
+N=3 not observed (may be unused or reserved).
 
-Change B0–B2 in the `BITS_*` arrays in `fan_remote.ino` to match your remote's DIP switch setting. B5–B7 and the encoding rule should remain the same across UC7070T units.
+## Capture Evidence
+
+Re-captured with a dedicated second ESP8266+CC1101 RX unit. Each button pressed
+individually; N value decoded from multiple clean 13-pulse frames per button.
+
+| Button | N decoded | Notes                          |
+|--------|-----------|--------------------------------|
+| HI     | 0         | SS at data[0], LL+SL×4 tail   |
+| MED    | 1         | SS at data[1], LL+SL×3 tail   |
+| LOW    | 2         | SS at data[2], LL+SL×2 tail   |
+| OFF    | 4         | SS at data[4], LL+SL×0 tail   |
+| LIGHT  | 5         | SS at data[5], LONG_H tail     |
+
+Earlier 12-capture set (physical remote captured without dedicated RX unit) had
+HI/MED swapped and LOW/LIGHT swapped in the label column — the N decoding logic
+was correct but the buttons were mislabelled. OFF (N=4) was correct in both sets.
+
+## Hardware
+
+- **CC1101 module**: E07-M1010 (Ebyte/CDEBYTE) — 300–348 MHz, 10 dBm max TX
+- **MCU**: ESP8266 (Generic / Wemos D1 Mini)
 
 ## CC1101 Configuration
 
@@ -72,7 +107,7 @@ TX is implemented using CC1101 FIFO mode. The OOK pulse pattern is pre-computed 
 | MDMCFG2   | `0x20` | OOK modulation, no sync word                         |
 | FREND0    | `0x10` | OOK=1 uses PATABLE[0] (carrier on); OOK=0 = PA off  |
 | DRATE     | 40 kbaud | via `setDRate(40)`                                 |
-| PATABLE[0]| `0xC0` | ~10 dBm at 433 MHz, set by `setPA(10)`              |
+| PATABLE[0]| `0xC0` | ~10 dBm TX power, set by `setPA(10)`                |
 
 > **FREND0 note:** The SmartRC library's `setModulation(2)` writes `FREND0=0x11`, which routes
 > OOK=1 to PATABLE[1] (default 0x00 = no carrier). Explicitly writing `0x10` after library init
@@ -80,20 +115,21 @@ TX is implemented using CC1101 FIFO mode. The OOK pulse pattern is pre-computed 
 
 ## FIFO Encoding (40 kbaud NRZ)
 
-Each OOK pulse is expressed as a run of `1` bits (carrier on) followed by `0` bits (carrier off).
-At 40 kbaud, 1 bit = 25 µs.
+At 40 kbaud, 1 bit = 25 µs. Each OOK pulse phase is a run of 1-bits (carrier on) or 0-bits (carrier off).
 
-| Symbol  | ON bits | OFF bits | Actual timing        | Target timing        |
-|---------|---------|----------|----------------------|----------------------|
-| Sync    | 30      | 29       | 750 µs / 725 µs      | 740 µs / 720 µs      |
-| Bit `1` | 20      | 9        | 500 µs / 225 µs      | 490 µs / 235 µs      |
-| Bit `0` | 11      | 19       | 275 µs / 475 µs      | 265 µs / 465 µs      |
+| Symbol  | ON bits | OFF bits | Actual µs  | Target µs |
+|---------|---------|----------|------------|-----------|
+| SHORT_H | 10      | —        | 250        | ~250      |
+| LONG_H  | 22      | —        | 550        | ~550      |
+| SHORT_L | —       | 18       | 450        | ~450      |
+| LONG_L  | —       | 32       | 800        | ~790      |
+| GAP     | —       | 320      | 8000       | ~8000     |
 
-Total stream length: ~1198 bytes (4 reps × ~300 bytes).
+Total stream per button press: 4 reps × 838 bits = 3352 bits = ~420 bytes.
 
 ## TX Sequence
 
-1. `buildStream()` — pre-compute full NRZ byte stream into `g_stream[]`
+1. `buildStream(N)` — pre-compute NRZ byte stream into `g_stream[]`
 2. `SFSTXON` strobe — PLL calibrates and locks (~800 µs), PA stays off (FSTXON state)
 3. Write first 64 bytes into TX FIFO
 4. `STX` strobe — PA on, transmission starts instantly (PLL already locked)
@@ -101,26 +137,36 @@ Total stream length: ~1198 bytes (4 reps × ~300 bytes).
 6. Wait for `TXFIFO_UNDERFLOW` flag (last byte transmitted)
 7. `SIDLE` + `SFTX` — return to idle and clear underflow flag
 
-The entire critical section (steps 3–6) runs inside `noInterrupts()`. At 40 kbaud, ~1200 bytes takes approximately 30 ms — well within the ESP8266 WDT limit.
-
 ## Capture Methodology
 
-Raw pulses were captured using `capture/capture.ino`, which:
-- Configures CC1101 in OOK RX mode at 433.92 MHz
-- Reads the demodulated signal from CC1101 GDO0 (configured as digital data output in RX mode)
-- Records HIGH/LOW pulse durations until a gap > 8 ms (end of burst)
+Raw pulses captured using `capture/capture.ino`:
+- CC1101 in OOK RX mode at 303.92 MHz, 812.5 kHz RX bandwidth
+- GDO0 pin configured as demodulated digital data output
+- Records HIGH/LOW durations until gap > 8 ms (end of rep)
 - Prints raw `+HHH-LLL` tokens over Serial
 
-`analyze.py` parses the raw tokens, strips sync pulses (HIGH ≥ 600 µs), decodes bits using the
-380 µs threshold, and applies majority voting across the 4 repetitions to produce the final bit arrays.
+## Current Status
+
+All registers confirmed correct (`/dumpregs` and `/status`). Firmware encodes protocol
+correctly and FIFO streams cleanly (no underflows, TXBYTES drains). However, no fan
+response observed across all 6 N values (0–5) with 15 reps.
+
+**OOK gating test result**: `/carrier_ook` (2s ON / 2s OFF alternation at 40 kbaud)
+showed the physical remote stayed jammed throughout both OFF windows. This means
+the PA does not gate off when FIFO data is 0x00 — the carrier is continuous in TX state
+regardless of FIFO contents.
+
+Suspected cause: hardware defect on the specific E07-M1010 module unit. Two units
+available; second unit swap is the immediate next diagnostic step.
 
 ## What Was Investigated
 
 | Approach | Outcome |
 |----------|---------|
-| Async GDO0 bit-bang (PKTCTRL0=0x32) | CC1101 enters TX state (MARCSTATE=0x13) but GDO0 does not modulate the OOK carrier on E07-M1010 |
-| FIFO mode (PKTCTRL0=0x02) | Streaming works correctly (TXBYTES drains, no underflows) |
-| FREND0=0x11 (library default) | OOK carrier inverted — PA off when it should be on. Fixed with 0x10 |
-| Explicit PATABLE write | Overrode library's setPA() value. Removed — setPA() handles it correctly |
-| 10 ms inter-rep gaps | Tested and reverted. Raw captures confirm reps are back-to-back with no gap |
-| RF emission confirmation | Inconclusive. MARCSTATE=0x13 confirms chip state; actual antenna output unverified |
+| 73-bit byte-based protocol (original analysis) | Wrong — reanalysis of 12 captures shows a 13-pulse position-encoded protocol |
+| Async GDO0 bit-bang (PKTCTRL0=0x32) | CC1101 enters TX state but GDO0 does not modulate OOK on E07-M1010 |
+| FIFO mode (PKTCTRL0=0x02) | TXBYTES drains cleanly, no underflows — but OOK gating unconfirmed |
+| FREND0=0x11 (library default) | OOK carrier broken — fixed with 0x10 |
+| MDMCFG2=0x20 (reserved modulation) | Emits carrier but no OOK gating — fixed with 0x30 |
+| OOK gating test (2s ON/OFF via FIFO) | PA stayed on during 0x00 phase — gating not working on current unit |
+| Carrier jamming test | Physical remote reliably jammed at 303.92 MHz — RF path confirmed |

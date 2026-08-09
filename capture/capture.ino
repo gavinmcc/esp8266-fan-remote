@@ -45,6 +45,7 @@ struct Pulse {
 
 Pulse pulses[MAX_PULSES];
 int pulseCount = 0;
+int captureCount = 0;
 
 // Read a CC1101 register directly via raw SPI for diagnostics
 uint8_t cc1101ReadReg(uint8_t addr) {
@@ -74,7 +75,7 @@ void setupCC1101() {
   Serial.println("(expect PARTNUM=0x00, VERSION=0x14 — 0xFF means no SPI response)");
 
   ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setMHZ(433.92);   // carrier frequency
+  ELECHOUSE_cc1101.setMHZ(303.92);   // carrier frequency
   ELECHOUSE_cc1101.setModulation(2); // 2 = OOK/ASK
   ELECHOUSE_cc1101.setDRate(3.79);   // data rate kbaud (rough estimate; adjust after analysis)
   ELECHOUSE_cc1101.setRxBW(812.50);  // wide RX bandwidth to catch signal
@@ -99,7 +100,7 @@ void setup() {
 
   pinMode(GDO0_PIN, INPUT);
 
-  Serial.println("Listening on 433.92 MHz OOK...");
+  Serial.println("Listening on 303.92 MHz OOK (UC7070T band)...");
   Serial.println("Press a button on the remote.\n");
 }
 
@@ -148,18 +149,13 @@ done:
 }
 
 void printCapture(const char* label) {
-  Serial.printf("\n--- %s | %d pulses ---\n", label, pulseCount);
-  for (int i = 0; i < pulseCount; i++) {
-    Serial.printf("[%3d] +%5lu  -%5lu\n", i, pulses[i].high, pulses[i].low);
-  }
-
-  // Also print as compact string for easy copy-paste
-  Serial.print("RAW: ");
+  // Compact single-line output to minimize Serial time between reps
+  Serial.printf("@%lums #%d(%d): ", millis(), captureCount, pulseCount);
   for (int i = 0; i < pulseCount; i++) {
     Serial.printf("+%lu-%lu", pulses[i].high, pulses[i].low);
     if (i < pulseCount - 1) Serial.print(' ');
   }
-  Serial.println("\n---");
+  Serial.println();
 }
 
 // Simple stats to help identify bit timings
@@ -177,9 +173,20 @@ void printStats() {
   Serial.printf("LOW  range: %lu - %lu us\n", minLo, maxLo);
 }
 
-int captureCount = 0;
+static uint32_t lastRssi = 0;
+static uint32_t lastGdo  = 0;
 
 void loop() {
+  uint32_t now = millis();
+
+  // Print RSSI + GDO0 state every 500ms so we can see if RX is getting any signal
+  if (now - lastRssi >= 100) {
+    lastRssi = now;
+    int rssi = ELECHOUSE_cc1101.getRssi();
+    int gdo  = digitalRead(GDO0_PIN);
+    Serial.printf("[RSSI] %d dBm  GDO0=%d\n", rssi, gdo);
+  }
+
   if (!capturePulses()) return;
 
   char label[32];
@@ -187,7 +194,7 @@ void loop() {
   printCapture(label);
   printStats();
 
-  // Re-arm receiver
+  // Re-arm immediately to catch consecutive reps from one button press
   ELECHOUSE_cc1101.SetRx();
-  delay(300);
+  delay(2);
 }

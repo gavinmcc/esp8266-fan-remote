@@ -14,3 +14,6 @@ build/
 # VS Code / Arduino IDE
 .vscode/
 *.orig
+
+# Scratch output files
+temp_output*.txt

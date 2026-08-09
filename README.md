@@ -20,9 +20,7 @@ Replays captured OOK RF codes to control a RHINE UC7070T ceiling fan over HTTP.
 | MISO       | GPIO12      | D6            |
 | SCK        | GPIO14      | D5            |
 | CSN        | GPIO15      | D8            |
-| GDO0       | —           | not connected |
-
-> **Note:** GDO0 is unused. TX is handled via CC1101 FIFO mode — data travels over SPI, not GDO0.
+| GDO0       | GPIO5       | D1            |
 
 ## Dependencies
 
@@ -64,5 +62,5 @@ See [SPEC.md](SPEC.md) for full protocol details and how to adapt for other addr
 
 ## Status
 
-Working: ESP8266 WiFi, HTTP server, CC1101 SPI communication, FIFO streaming (no underflows).  
-Unconfirmed: RF emission from the specific CC1101 module tested. Replacement module on order.
+Working: ESP8266 WiFi, HTTP server, CC1101 SPI communication, RF emission confirmed (carrier test jams physical remote).  
+Testing: async GDO0 TX — direct µs bit-bang of OOK data, bypassing FIFO.
