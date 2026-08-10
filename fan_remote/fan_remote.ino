@@ -592,7 +592,16 @@ void handleLightTry() {
     int reps = server.arg("reps").toInt();
     if (reps < 1 || reps > 250) { server.send(400, "text/plain", "reps must be 1-250"); return; }
 
-    int durationMs = reps * 21;  // ~21ms per rep
+    int durationMs = reps * 21;
+    char resp[80];
+    snprintf(resp, sizeof(resp), "LIGHT %d reps (~%dms) sending...", reps, durationMs);
+    // Send response BEFORE TX so the TCP connection closes cleanly.
+    // Long TX (>1s) hangs the HTTP connection open and corrupts the lwIP stack.
+    server.send(200, "text/plain", resp);
+    // Give the TCP stack 300ms to fully close the connection before blocking TX.
+    // Without this, the lwIP stack accumulates pending events during long TX and crashes.
+    delay(300);
+
     Serial.printf("[LIGHTTRY] LIGHT N=5, %d reps (~%dms burst)\n", reps, durationMs);
 
     cc1101InitTx();
@@ -622,16 +631,15 @@ void handleLightTry() {
         noInterrupts(); fastStrobe(STROBE_SIDLE); interrupts();
         delay(8);
         noInterrupts(); fastStrobe(STROBE_SFSTXON); interrupts();
+        // Every 25 reps give WiFi stack a longer breath to prevent watchdog / lwIP issues
+        if ((r & 0x1F) == 0x1F) delay(50);
     }
 
     fastStrobe(STROBE_SIDLE);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
     pinMode(GDO0_TX_PIN, INPUT);
     cc1101InitTx();
-
-    char resp[80];
-    snprintf(resp, sizeof(resp), "LIGHT %d reps (~%dms). Toggle? Flicker? No response?", reps, durationMs);
-    server.send(200, "text/plain", resp);
+    Serial.printf("[LIGHTTRY] done\n");
 }
 
 // GET /strobe_test?ms=X — emit 20 STX pulses of X ms each (default 10ms), 10ms off gap.
