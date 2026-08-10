@@ -1,0 +1,820 @@
+
+<title>RF Debug — UC7070T Protocol Comparison</title>
+<style>
+  /* ── tokens ── */
+  :root {
+    --bg:        #0C0E12;
+    --surface:   #141820;
+    --card:      #1C2130;
+    --border:    #2A3040;
+    --text:      #CDD9E5;
+    --muted:     #768390;
+    --accent:    #5EAEFF;
+    --ok:        #4ADE80;
+    --ok-bg:     rgba(74,222,128,.10);
+    --fixed:     #FB923C;
+    --fixed-bg:  rgba(251,146,60,.10);
+    --warn:      #FBBF24;
+    --warn-bg:   rgba(251,191,36,.10);
+    --bad:       #F87171;
+    --bad-bg:    rgba(248,113,113,.10);
+    --mono:      'JetBrains Mono','Fira Code','SF Mono',Consolas,monospace;
+    --ui:        system-ui,-apple-system,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:       #EDF0F4;
+      --surface:  #FFFFFF;
+      --card:     #F4F6FA;
+      --border:   #D0D8E4;
+      --text:     #1A2030;
+      --muted:    #6B7890;
+      --accent:   #2277DD;
+      --ok-bg:    rgba(74,222,128,.15);
+      --fixed-bg: rgba(251,146,60,.15);
+      --warn-bg:  rgba(251,191,36,.15);
+      --bad-bg:   rgba(248,113,113,.15);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:       #EDF0F4;
+    --surface:  #FFFFFF;
+    --card:     #F4F6FA;
+    --border:   #D0D8E4;
+    --text:     #1A2030;
+    --muted:    #6B7890;
+    --accent:   #2277DD;
+    --ok-bg:    rgba(74,222,128,.15);
+    --fixed-bg: rgba(251,146,60,.15);
+    --warn-bg:  rgba(251,191,36,.15);
+    --bad-bg:   rgba(248,113,113,.15);
+  }
+  :root[data-theme="dark"] {
+    --bg:        #0C0E12;
+    --surface:   #141820;
+    --card:      #1C2130;
+    --border:    #2A3040;
+    --text:      #CDD9E5;
+    --muted:     #768390;
+    --accent:    #5EAEFF;
+    --ok-bg:     rgba(74,222,128,.10);
+    --fixed-bg:  rgba(251,146,60,.10);
+    --warn-bg:   rgba(251,191,36,.10);
+    --bad-bg:    rgba(248,113,113,.10);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 32px 20px 64px;
+  }
+
+  .page { max-width: 900px; margin: 0 auto; }
+
+  /* ── header ── */
+  .hdr {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hdr-left h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -.3px;
+    color: var(--text);
+  }
+  .hdr-left p {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .hdr-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+    line-height: 1.8;
+  }
+  .hdr-meta span { color: var(--accent); }
+
+  /* ── summary chips ── */
+  .summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 32px;
+  }
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid transparent;
+  }
+  .chip-ok   { background: var(--ok-bg);    color: var(--ok);    border-color: rgba(74,222,128,.2); }
+  .chip-fixed{ background: var(--fixed-bg); color: var(--fixed); border-color: rgba(251,146,60,.2);}
+  .chip-warn { background: var(--warn-bg);  color: var(--warn);  border-color: rgba(251,191,36,.2);}
+  .chip-bad  { background: var(--bad-bg);   color: var(--bad);   border-color: rgba(248,113,113,.2);}
+  .chip-dot  { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* ── section ── */
+  .section { margin-bottom: 36px; }
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── comparison table ── */
+  .tbl-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  thead th {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  thead th:first-child { border-radius: 6px 0 0 0; }
+  thead th:last-child  { border-radius: 0 6px 0 0; }
+
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:nth-child(even) td { background: rgba(255,255,255,.014); }
+  @media (prefers-color-scheme: light) {
+    tbody tr:nth-child(even) td { background: rgba(0,0,0,.02); }
+  }
+  :root[data-theme="light"] tbody tr:nth-child(even) td { background: rgba(0,0,0,.02); }
+  :root[data-theme="dark"]  tbody tr:nth-child(even) td { background: rgba(255,255,255,.014); }
+
+  td {
+    padding: 9px 12px;
+    vertical-align: middle;
+    background: var(--surface);
+  }
+  td.dim   { color: var(--muted); font-size: 12px; }
+  td.mono  { font-family: var(--mono); font-size: 12px; }
+  td.note  { font-size: 12px; color: var(--muted); max-width: 260px; }
+
+  /* row state via data-attr instead of class collision */
+  tr[data-state="ok"]    td { background: color-mix(in srgb, var(--surface) 85%, var(--ok-bg)); }
+  tr[data-state="fixed"] td { background: color-mix(in srgb, var(--surface) 75%, var(--fixed-bg)); }
+  tr[data-state="warn"]  td { background: color-mix(in srgb, var(--surface) 75%, var(--warn-bg)); }
+  tr[data-state="bad"]   td { background: color-mix(in srgb, var(--surface) 75%, var(--bad-bg)); }
+
+  /* ── status badge ── */
+  .st {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .st-ok    { background: var(--ok-bg);    color: var(--ok);    }
+  .st-fixed { background: var(--fixed-bg); color: var(--fixed); }
+  .st-warn  { background: var(--warn-bg);  color: var(--warn);  }
+  .st-bad   { background: var(--bad-bg);   color: var(--bad);   }
+
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--card);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    color: var(--accent);
+  }
+
+  /* ── diagnostic actions ── */
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+  .action {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0 14px;
+    align-items: start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .action-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1.4;
+  }
+  .action-title {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .action-body {
+    grid-column: 2;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 3px;
+    line-height: 1.6;
+  }
+  .action-body code { font-size: 11px; }
+
+  /* ── frame diagram ── */
+  .frame-wrap { overflow-x: auto; padding-bottom: 4px; }
+  .frame {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    min-width: 600px;
+    padding: 16px 0 8px;
+  }
+  .pulse {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .pulse-bar {
+    width: 100%;
+    border-radius: 2px 2px 0 0;
+    border: 1px solid var(--border);
+  }
+  .pulse-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .pulse-idx {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .p-ls  .pulse-bar { background: var(--accent); opacity: .7; }
+  .p-ll  .pulse-bar { background: var(--accent); }
+  .p-sl  .pulse-bar { background: var(--warn); opacity: .8; }
+  .p-ss  .pulse-bar { background: var(--ok); }
+  .p-gap .pulse-bar { background: var(--border); border-style: dashed; }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+</style>
+
+<div class="page">
+
+  <header class="hdr">
+    <div class="hdr-left">
+      <h1>RF Protocol Debug — UC7070T Ceiling Fan</h1>
+      <p>Systematic comparison: physical remote vs ESP8266 + CC1101 firmware</p>
+    </div>
+    <div class="hdr-meta">
+      <div>Freq: <span>303.92 MHz</span></div>
+      <div>Mod: <span>OOK / ASK</span></div>
+      <div>Rate: <span>~40 kbaud</span></div>
+    </div>
+  </header>
+
+  <!-- Summary chips -->
+  <div class="summary">
+    <div class="chip chip-ok"><div class="chip-dot"></div>10 parameters confirmed matching</div>
+    <div class="chip chip-fixed"><div class="chip-dot"></div>2 bugs found &amp; fixed (unverified in field)</div>
+    <div class="chip chip-warn"><div class="chip-dot"></div>3 parameters unknown / unverified</div>
+    <div class="chip chip-bad"><div class="chip-dot"></div>1 dimension differs (rep count)</div>
+  </div>
+
+  <!-- Section 1: CC1101 Registers -->
+  <div class="section">
+    <div class="section-title">CC1101 Registers</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Register</th>
+            <th>Addr</th>
+            <th>Required value</th>
+            <th>What firmware sets</th>
+            <th>Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-state="fixed">
+            <td><code>MDMCFG2</code></td>
+            <td class="mono">0x12</td>
+            <td class="mono">0x30 — OOK, no sync</td>
+            <td class="mono">0x30 ← was <span style="color:var(--bad)">0x20</span></td>
+            <td><span class="st st-fixed">FIXED</span></td>
+            <td class="note">0x20 = bits 6:4=010 = <em>reserved</em> modulation. CC1101 emits RF but FIFO data doesn't gate the PA → no OOK. Never verified in field after fix.</td>
+          </tr>
+          <tr data-state="fixed">
+            <td><code>FREND0</code></td>
+            <td class="mono">0x22</td>
+            <td class="mono">0x10 — PA = PATABLE[0]</td>
+            <td class="mono">0x10 ← library wrote 0x11</td>
+            <td><span class="st st-fixed">FIXED</span></td>
+            <td class="note">Library's <code>setModulation(2)</code> writes bits 2:0=001 → OOK='1' uses PATABLE[1]=0x00 (silent). 0x10 routes to PATABLE[0]=0xC0.</td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>PKTCTRL0</code></td>
+            <td class="mono">0x08</td>
+            <td class="mono">0x02 — FIFO, infinite, no CRC</td>
+            <td class="mono">0x02</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Confirmed in startup log.</td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>PATABLE[0–7]</code></td>
+            <td class="mono">0x3E</td>
+            <td class="mono">all 0xC0 (~10 dBm)</td>
+            <td class="mono">all 0xC0</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Burst-written. PATABLE[0] confirmed via startup readback.</td>
+          </tr>
+          <tr data-state="warn">
+            <td><code>MDMCFG1</code></td>
+            <td class="mono">0x13</td>
+            <td class="mono">NUM_PREAMBLE=0 or irrelevant</td>
+            <td class="mono">library default</td>
+            <td><span class="st st-warn">? UNKNOWN</span></td>
+            <td class="note">SYNC_MODE=0 (from 0x30) should suppress preamble in TX. Default NUM_PREAMBLE=4 bytes. Not explicitly verified.</td>
+          </tr>
+          <tr data-state="warn">
+            <td><code>MDMCFG2</code> readback</td>
+            <td class="mono">0x12</td>
+            <td class="mono">0x30</td>
+            <td class="mono">unconfirmed</td>
+            <td><span class="st st-warn">? UNVERIFIED</span></td>
+            <td class="note">User's last serial log truncated before register check lines. Cannot confirm 0x30 fix was actually in the flashed binary.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 2: Timing -->
+  <div class="section">
+    <div class="section-title">Pulse Timing (40 kbaud → 1 bit = 25 µs)</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Physical remote — measured range</th>
+            <th>Physical remote — avg</th>
+            <th>Firmware — bits × 25 µs</th>
+            <th>Firmware — µs</th>
+            <th>Δ</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-state="ok">
+            <td><code>Pulse 0 HIGH</code> <span style="font-size:11px;color:var(--muted)">(SYNC0_H)</span></td>
+            <td class="mono">400 – 451 µs</td>
+            <td class="mono">421 µs</td>
+            <td class="mono">17 bits</td>
+            <td class="mono">425 µs</td>
+            <td class="mono" style="color:var(--ok)">+4 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>Pulse 0 LOW</code> <span style="font-size:11px;color:var(--muted)">(SYNC0_L)</span></td>
+            <td class="mono">294 – 359 µs</td>
+            <td class="mono">340 µs</td>
+            <td class="mono">14 bits</td>
+            <td class="mono">350 µs</td>
+            <td class="mono" style="color:var(--ok)">+10 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>LONG_H</code> <span style="font-size:11px;color:var(--muted)">(pulses 1+)</span></td>
+            <td class="mono">522 – 662 µs</td>
+            <td class="mono">598 µs</td>
+            <td class="mono">24 bits</td>
+            <td class="mono">600 µs</td>
+            <td class="mono" style="color:var(--ok)">+2 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>SHORT_H</code></td>
+            <td class="mono">195 – 296 µs</td>
+            <td class="mono">243 µs</td>
+            <td class="mono">10 bits</td>
+            <td class="mono">250 µs</td>
+            <td class="mono" style="color:var(--ok)">+7 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>SHORT_L</code> <span style="font-size:11px;color:var(--muted)">(non-first)</span></td>
+            <td class="mono">398 – 499 µs</td>
+            <td class="mono">448 µs</td>
+            <td class="mono">18 bits</td>
+            <td class="mono">450 µs</td>
+            <td class="mono" style="color:var(--ok)">+2 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>LONG_L</code></td>
+            <td class="mono">740 – 848 µs</td>
+            <td class="mono">795 µs</td>
+            <td class="mono">32 bits</td>
+            <td class="mono">800 µs</td>
+            <td class="mono" style="color:var(--ok)">+5 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>GAP</code></td>
+            <td class="mono">~8000 µs</td>
+            <td class="mono">8000 µs</td>
+            <td class="mono">320 bits</td>
+            <td class="mono">8000 µs</td>
+            <td class="mono" style="color:var(--ok)">0</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td><code>Data rate</code></td>
+            <td class="mono">~40 kbaud (inferred)</td>
+            <td class="mono">—</td>
+            <td class="mono">setDRate(40)</td>
+            <td class="mono">~40,000 bps</td>
+            <td class="mono" style="color:var(--ok)">≈</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 3: Frame structure -->
+  <div class="section">
+    <div class="section-title">Frame Structure</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter</th>
+            <th>Physical remote</th>
+            <th>Firmware</th>
+            <th>Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-state="ok">
+            <td>Header symbols</td>
+            <td class="mono">LS LS LL SL SS LL</td>
+            <td class="mono">LS LS LL SL SS LL</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Confirmed via 12 captures, consistent across all buttons.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>Data encoding</td>
+            <td class="mono">N×SL, SS, tail</td>
+            <td class="mono">N×SL, SS, tail</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">N = position of SS in 7-pulse data section.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>Pulses per rep</td>
+            <td class="mono">13</td>
+            <td class="mono">13</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note"></td>
+          </tr>
+          <tr data-state="ok">
+            <td>Bits per rep</td>
+            <td class="mono">~838 bits (estimated)</td>
+            <td class="mono">837 bits</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Calculated from measured timing; firmware total confirmed by FIFO byte count.</td>
+          </tr>
+          <tr data-state="bad">
+            <td>Repetitions per press</td>
+            <td class="mono">~12 reps (captured)</td>
+            <td class="mono">8 reps</td>
+            <td><span class="st st-bad">↓ LOW</span></td>
+            <td class="note">Physical remote captured sending 12+ identical reps. Firmware sends 8. Fan may require more consecutive valid frames.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>Inter-rep gap</td>
+            <td class="mono">~8000 µs</td>
+            <td class="mono">8000 µs</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note"></td>
+          </tr>
+          <tr data-state="warn">
+            <td>Pre-stream preamble</td>
+            <td class="mono">none</td>
+            <td class="mono">none if SYNC_MODE=0</td>
+            <td><span class="st st-warn">? ASSUMED</span></td>
+            <td class="note">CC1101 docs say "no preamble if SYNC_MODE=0". MDMCFG2=0x30 sets SYNC_MODE=000. Assumed correct but not empirically verified.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 4: Command map -->
+  <div class="section">
+    <div class="section-title">Command Map (N values)</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Command</th>
+            <th>N (physical remote)</th>
+            <th>N (firmware)</th>
+            <th>Capture evidence</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-state="ok">
+            <td>MED</td>
+            <td class="mono">0</td>
+            <td class="mono">0</td>
+            <td class="note">Caps 3, 8 — consistent</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td>HI</td>
+            <td class="mono">1</td>
+            <td class="mono">1</td>
+            <td class="note">Caps 2, 9 — consistent</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td>LIGHT</td>
+            <td class="mono">2</td>
+            <td class="mono">2</td>
+            <td class="note">Caps 1, 10 — consistent</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="warn">
+            <td>— (unknown)</td>
+            <td class="mono">3</td>
+            <td class="mono">3 (via /try?n=3)</td>
+            <td class="note">Never captured. May be unused.</td>
+            <td><span class="st st-warn">? UNTESTED</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td>OFF</td>
+            <td class="mono">4</td>
+            <td class="mono">4</td>
+            <td class="note">Caps 5, 11 — consistent</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+          <tr data-state="ok">
+            <td>LOW</td>
+            <td class="mono">5</td>
+            <td class="mono">5</td>
+            <td class="note">Caps 4, 6, 7, 12 — consistent</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Frame diagram -->
+  <div class="section">
+    <div class="section-title">Per-Rep Frame Layout (N=1, HI)</div>
+    <div class="frame-wrap">
+      <div class="frame">
+        <!-- Pulse 0: first LS (shorter) -->
+        <div class="pulse p-ls" style="width:31px">
+          <div class="pulse-bar" style="height:38px"></div>
+          <div class="pulse-label">LS₀</div>
+          <div class="pulse-idx">0</div>
+        </div>
+        <!-- Pulse 1: LS -->
+        <div class="pulse p-ls" style="width:42px">
+          <div class="pulse-bar" style="height:46px"></div>
+          <div class="pulse-label">LS</div>
+          <div class="pulse-idx">1</div>
+        </div>
+        <!-- Pulse 2: LL -->
+        <div class="pulse p-ll" style="width:56px">
+          <div class="pulse-bar" style="height:56px"></div>
+          <div class="pulse-label">LL</div>
+          <div class="pulse-idx">2</div>
+        </div>
+        <!-- Pulse 3: SL -->
+        <div class="pulse p-sl" style="width:42px">
+          <div class="pulse-bar" style="height:42px"></div>
+          <div class="pulse-label">SL</div>
+          <div class="pulse-idx">3</div>
+        </div>
+        <!-- Pulse 4: SS (header) -->
+        <div class="pulse p-ss" style="width:26px">
+          <div class="pulse-bar" style="height:28px"></div>
+          <div class="pulse-label">SS</div>
+          <div class="pulse-idx">4</div>
+        </div>
+        <!-- Pulse 5: LL -->
+        <div class="pulse p-ll" style="width:56px">
+          <div class="pulse-bar" style="height:56px"></div>
+          <div class="pulse-label">LL</div>
+          <div class="pulse-idx">5</div>
+        </div>
+        <!-- separator label -->
+        <div style="align-self:center;font-size:10px;color:var(--muted);writing-mode:vertical-rl;padding:0 4px;opacity:.5">HEADER</div>
+        <!-- Data pulse 6: SL (N=1, one SL before SS) -->
+        <div class="pulse p-sl" style="width:42px">
+          <div class="pulse-bar" style="height:42px"></div>
+          <div class="pulse-label">SL</div>
+          <div class="pulse-idx">6</div>
+        </div>
+        <!-- Data pulse 7: SS (command marker, N=1) -->
+        <div class="pulse p-ss" style="width:26px;position:relative">
+          <div class="pulse-bar" style="height:28px;outline:2px solid var(--ok);outline-offset:2px"></div>
+          <div class="pulse-label" style="color:var(--ok)">SS★</div>
+          <div class="pulse-idx" style="color:var(--ok)">7</div>
+        </div>
+        <!-- Pulse 8: LL (tail) -->
+        <div class="pulse p-ll" style="width:56px">
+          <div class="pulse-bar" style="height:56px"></div>
+          <div class="pulse-label">LL</div>
+          <div class="pulse-idx">8</div>
+        </div>
+        <!-- Pulses 9-11: SL tail (4-N = 3 SLs) -->
+        <div class="pulse p-sl" style="width:42px">
+          <div class="pulse-bar" style="height:42px"></div>
+          <div class="pulse-label">SL</div>
+          <div class="pulse-idx">9</div>
+        </div>
+        <div class="pulse p-sl" style="width:42px">
+          <div class="pulse-bar" style="height:42px"></div>
+          <div class="pulse-label">SL</div>
+          <div class="pulse-idx">10</div>
+        </div>
+        <div class="pulse p-sl" style="width:42px">
+          <div class="pulse-bar" style="height:42px"></div>
+          <div class="pulse-label">SL</div>
+          <div class="pulse-idx">11</div>
+        </div>
+        <!-- Pulse 12: terminal SHORT_H -->
+        <div class="pulse p-ss" style="width:10px">
+          <div class="pulse-bar" style="height:20px"></div>
+          <div class="pulse-label" style="font-size:8px">S_t</div>
+          <div class="pulse-idx">12</div>
+        </div>
+        <!-- separator label -->
+        <div style="align-self:center;font-size:10px;color:var(--muted);writing-mode:vertical-rl;padding:0 4px;opacity:.5">DATA</div>
+        <!-- Gap -->
+        <div class="pulse p-gap" style="width:48px">
+          <div class="pulse-bar" style="height:12px"></div>
+          <div class="pulse-label">GAP</div>
+          <div class="pulse-idx" style="font-size:8px">8ms</div>
+        </div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--accent);opacity:.7"></div>LS — Long High + Short Low</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div>LL — Long High + Long Low</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--warn)"></div>SL — Short High + Long Low</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--ok)"></div>SS — Short High + Short Low (command marker)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--border)"></div>GAP — 8ms silence</div>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:8px">★ SS at pulse 7 = N=1 = HI. N is the zero-based data-section index of SS (pulse 6 = data[0], so SS at pulse 7 = data[1] = N=1).</p>
+    </div>
+  </div>
+
+  <!-- Section 5: Signal characteristics (unverified) -->
+  <div class="section">
+    <div class="section-title">Signal Characteristics (inferred / unverified)</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Dimension</th>
+            <th>Physical remote</th>
+            <th>CC1101 firmware</th>
+            <th>Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr data-state="warn">
+            <td>OOK PA gating</td>
+            <td>Crystal OSC, simple PA on/off</td>
+            <td>PLL + PA via PATABLE[0]/off</td>
+            <td><span class="st st-warn">? ASSUMED</span></td>
+            <td class="note">With MDMCFG2=0x30, FIFO '1' should turn PA on (PATABLE[0]=0xC0), '0' should turn PA off. Not empirically verified. Carrier test only verifies RF emission, not modulation.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>Signal polarity</td>
+            <td>HIGH = carrier on</td>
+            <td>bit='1' = carrier on</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">GDO0 HIGH in RX = carrier detected = '1'. Our NRZ stream: 1-bits for HIGH phases, 0-bits for LOW. Consistent.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>Carrier frequency</td>
+            <td>303.9 MHz (FCC ID CHQ7070T)</td>
+            <td>303.92 MHz</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Confirmed: carrier jams physical remote at ~2m from fan ceiling receiver.</td>
+          </tr>
+          <tr data-state="ok">
+            <td>TX power / range</td>
+            <td>unknown (~5–10 dBm typical)</td>
+            <td>~10 dBm (0xC0)</td>
+            <td><span class="st st-ok">✓ OK</span></td>
+            <td class="note">Carrier test confirmed jamming at ceiling fan range (~2–3m). Range not the limiting factor.</td>
+          </tr>
+          <tr data-state="warn">
+            <td>OOK '0' suppression</td>
+            <td>Clean — dedicated PA with fast off</td>
+            <td>unknown — CC1101 PA ramp</td>
+            <td><span class="st st-warn">? UNKNOWN</span></td>
+            <td class="note">If CC1101 has slow PA turn-off, '0' bits might have residual carrier. Could confuse envelope detector. Use /carrier_ook test to verify.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Section 6: Diagnostic actions -->
+  <div class="section">
+    <div class="section-title">Remaining Diagnostic Actions</div>
+    <div class="actions">
+      <div class="action">
+        <div class="action-num">1</div>
+        <div>
+          <div class="action-title">Confirm MDMCFG2=0x30 via startup log</div>
+          <div class="action-body">Flash, open Serial Monitor, look for: <code>MDMCFG2=0x30 (expect 0x30)</code>. If it shows <code>0x20</code>, the 0x30 fix was not compiled in. The last test log was truncated and this cannot be confirmed.</div>
+        </div>
+      </div>
+      <div class="action">
+        <div class="action-num">2</div>
+        <div>
+          <div class="action-title">Verify OOK PA gating with /carrier_ook</div>
+          <div class="action-body">Add endpoint that sends alternating 0xFF/0x00 blocks (half-on, half-off carrier). In true OOK mode the physical remote should <em>work through</em> the intermittent carrier. If the remote gets jammed just as strongly as with all-0xFF, the PA is not gating (OOK broken despite 0x30). This is the key test to verify modulation — not just RF emission.</div>
+        </div>
+      </div>
+      <div class="action">
+        <div class="action-num">3</div>
+        <div>
+          <div class="action-title">Increase REPS from 8 → 15</div>
+          <div class="action-body">Physical remote captures show ~12 repetitions per button press. Our firmware sends 8. Some receivers require a minimum run of consecutive valid frames before accepting a command. This is a free change: bump <code>#define REPS 15</code>.</div>
+        </div>
+      </div>
+      <div class="action">
+        <div class="action-num">4</div>
+        <div>
+          <div class="action-title">Add /dumpregs to read back all CC1101 registers</div>
+          <div class="action-body">Read MDMCFG2, MDMCFG1, MDMCFG4, MDMCFG3, FREND0, PKTCTRL0, PKTCTRL1, FSCTRL1, FSCTRL0, FREQ2/1/0, MCSM0/1, CHANNR and print them all. Compare against the CC1101 datasheet expected values for OOK at 303.92 MHz. Eliminates all register ambiguity in one shot.</div>
+        </div>
+      </div>
+      <div class="action">
+        <div class="action-num">5</div>
+        <div>
+          <div class="action-title">Self-capture: transmit while capture sketch listens</div>
+          <div class="action-body">Flash capture.ino on the same (or second) ESP8266, place it near the fan_remote ESP8266, trigger a command, and see if the capture sketch decodes the correct pulse pattern. This verifies the actual OOK signal being emitted. Requires two ESP8266+CC1101 pairs, or brief firmware swap.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
