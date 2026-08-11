@@ -7,8 +7,8 @@ Replays captured OOK RF codes to control a RHINE UC7070T ceiling fan over HTTP a
 
 | Component | Notes |
 |-----------|-------|
-| ESP8266 | Generic board (e.g. Wemos D1 Mini, NodeMCU) |
-| CC1101 E07-M1101D | 303 MHz OOK transceiver module |
+| [ESP8266](https://www.amazon.com/dp/B081PX9YFV) | Generic board (e.g. Wemos D1 Mini, NodeMCU) |
+| [CC1101 E07-M1101D](https://www.amazon.com/dp/B0GYWFJ9KX) | 303 MHz OOK transceiver module |
 
 ## Wiring
 
