@@ -32,6 +32,7 @@
 #include <SPI.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <Espalexa.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "secrets.h"
 
@@ -86,6 +87,7 @@ static int commandReps(int N) {
 }
 
 ESP8266WebServer server(80);
+Espalexa espalexa;
 
 // ── FIFO NRZ stream builder ───────────────────────────────
 // Buffer for 15 reps × ~105 bytes = ~1575 bytes NRZ bitstream.
@@ -995,6 +997,16 @@ void handleRoot() {
 }
 
 // ─────────────────────────────────────────────────────────
+// ── Alexa (Espalexa) callbacks ────────────────────────────
+// brightness > 0 = "turn on"; 0 = "turn off".
+// Speed commands only fire on "turn on" to avoid accidental OFF on "turn off Fan High".
+// Light and Fan Off fire on any state change (both are effectively one-shot toggles/stops).
+void alexaFanHigh(uint8_t b)  { if (b) sendCommand(CMD_HI,    "ALEXA:HI"); }
+void alexaFanMed(uint8_t b)   { if (b) sendCommand(CMD_MED,   "ALEXA:MED"); }
+void alexaFanLow(uint8_t b)   { if (b) sendCommand(CMD_LOW,   "ALEXA:LOW"); }
+void alexaFanOff(uint8_t b)   {        sendCommand(CMD_OFF,   "ALEXA:OFF"); }
+void alexaFanLight(uint8_t b) {        sendCommand(CMD_LIGHT, "ALEXA:LIGHT"); }
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -1047,10 +1059,21 @@ void setup() {
     server.on("/dumpregs",    handleDumpregs);
     server.on("/carrier_ook", handleCarrierOok);
     server.on("/asyncgate",   handleAsyncgate);
-    server.begin();
-    Serial.println("Ready.");
+
+    // Alexa discovery: forward unrecognised URIs to espalexa before returning 404.
+    server.onNotFound([]() {
+        if (!espalexa.handleAlexaApiCall(server.uri(), server.arg(0)))
+            server.send(404, "text/plain", "Not found");
+    });
+    espalexa.addDevice("Bedroom Fan High",   alexaFanHigh);
+    espalexa.addDevice("Bedroom Fan Medium", alexaFanMed);
+    espalexa.addDevice("Bedroom Fan Low",    alexaFanLow);
+    espalexa.addDevice("Bedroom Fan Off",    alexaFanOff);
+    espalexa.addDevice("Bedroom Light",      alexaFanLight);
+    espalexa.begin(&server);  // calls server.begin() internally
+    Serial.println("Ready. Alexa devices registered.");
 }
 
 void loop() {
-    server.handleClient();
+    espalexa.loop();  // handles server.handleClient() + UPnP discovery internally
 }
