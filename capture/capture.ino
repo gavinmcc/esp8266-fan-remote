@@ -112,6 +112,7 @@ bool capturePulses() {
   uint32_t timeout = millis();
   while (digitalRead(GDO0_PIN) == LOW) {
     if (millis() - timeout > 100) return false; // nothing within 100ms
+    delay(0);  // yield to SDK watchdog; safe since we're just waiting, not timing
   }
 
   while (pulseCount < MAX_PULSES) {

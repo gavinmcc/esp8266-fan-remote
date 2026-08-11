@@ -332,13 +332,14 @@ void cc1101InitTx() {
 
     // PKTCTRL0=0x02: FIFO mode, infinite packet length.
     // MDMCFG2=0x30:  OOK modulation (bits 6:4 = 0b011), no sync word (bits 2:0 = 0b000).
-    //   0x20 = bits 6:4 = 0b010 = RESERVED modulation — wrong, emits RF but not OOK.
-    // FREND0=0x10:   OOK=1 uses PATABLE[0] (carrier on).
-    //   Library's setModulation(2) writes FREND0=0x11 → OOK=1 uses PATABLE[1]=0x00 → no power.
+    // FREND0=0x11:   PA_POWER=1 → OOK=1 uses PATABLE[1], OOK=0 uses PATABLE[0].
+    //   PATABLE[0]=0x00 (OOK=0 → PA off), PATABLE[1]=0xC0 (OOK=1 → full power).
+    //   CC1101 datasheet: "PATABLE[0] should be set to 0 for OOK (PA switched off)."
+    //   Prior bug: all PATABLE entries = 0xC0, so OOK=0 still drove carrier → gating never worked.
     ELECHOUSE_cc1101.setDRate(40);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
     ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x10);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
     // MCSM1=0x00: disable CCA (CCA_MODE=0 = always clear), TXOFF→IDLE, RXOFF→IDLE.
     // Default 0x30 (CCA_MODE=3) silently prevents STX from FSTXON if RSSI is above threshold.
     ELECHOUSE_cc1101.SpiWriteReg(0x17,         0x00);
@@ -347,7 +348,7 @@ void cc1101InitTx() {
     // during FSTXON, amplifies VCO signal into a low-level carrier that corrupts off-periods.
     ELECHOUSE_cc1101.SpiWriteReg(0x00,         0x56);  // IOCFG2 = inverted PA_PD
 
-    byte pa[8]; memset(pa, 0xC0, sizeof(pa));
+    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
 
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
@@ -399,11 +400,11 @@ void sendCommand(int N, const char* name) {
 }
 
 // ── HTTP handlers ─────────────────────────────────────────
-void handleHi()    { sendCommandStrobe(CMD_HI,    "HI");    server.send(200, "text/plain", "OK: HI"); }
-void handleMed()   { sendCommandStrobe(CMD_MED,   "MED");   server.send(200, "text/plain", "OK: MED"); }
-void handleLow()   { sendCommandStrobe(CMD_LOW,   "LOW");   server.send(200, "text/plain", "OK: LOW"); }
-void handleOff()   { sendCommandStrobe(CMD_OFF,   "OFF");   server.send(200, "text/plain", "OK: OFF"); }
-void handleLight() { sendCommandStrobe(CMD_LIGHT, "LIGHT"); server.send(200, "text/plain", "OK: LIGHT"); }
+void handleHi()    { server.send(200, "text/plain", "OK: HI");    delay(50); sendCommand(CMD_HI,    "HI"); }
+void handleMed()   { server.send(200, "text/plain", "OK: MED");   delay(50); sendCommand(CMD_MED,   "MED"); }
+void handleLow()   { server.send(200, "text/plain", "OK: LOW");   delay(50); sendCommand(CMD_LOW,   "LOW"); }
+void handleOff()   { server.send(200, "text/plain", "OK: OFF");   delay(50); sendCommand(CMD_OFF,   "OFF"); }
+void handleLight() { server.send(200, "text/plain", "OK: LIGHT"); delay(50); sendCommand(CMD_LIGHT, "LIGHT"); }
 
 // GET /dumpregs — read back all key CC1101 registers for verification
 void handleDumpregs() {
@@ -415,7 +416,7 @@ void handleDumpregs() {
         {"MDMCFG3",  0x11, 0x00, false},
         {"MDMCFG2",  0x12, 0x30, false},
         {"MDMCFG1",  0x13, 0x00, false},
-        {"FREND0",   0x22, 0x10, false},
+        {"FREND0",   0x22, 0x11, false},
         {"MCSM0",    0x18, 0x00, false},
         {"MCSM1",    0x17, 0x00, false},
         {"FREQ2",    0x0D, 0x00, false},
@@ -487,9 +488,9 @@ void handleCarrierOok() {
     ELECHOUSE_cc1101.setPA(10);
     ELECHOUSE_cc1101.setDRate(40);
     ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x10);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    byte pa[8]; memset(pa, 0xC0, sizeof(pa));
+    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
 
     byte on_buf[64]; memset(on_buf, 0xFF, sizeof(on_buf));
@@ -567,7 +568,7 @@ void handleStatus() {
     char buf[160];
     snprintf(buf, sizeof(buf),
         "Registers:\n  PKTCTRL0=0x%02X (want 0x02)\n  MDMCFG2 =0x%02X (want 0x30)\n"
-        "  FREND0  =0x%02X (want 0x10)\n  PATABLE[0]=0x%02X (library)\n",
+        "  FREND0  =0x%02X (want 0x11)\n  PATABLE[0]=0x%02X (want 0x00)\n",
         r0, r1, r2, r3);
     out += buf;
     Serial.print(out);
@@ -822,9 +823,9 @@ void handleCarrier() {
     ELECHOUSE_cc1101.setPA(10);
     ELECHOUSE_cc1101.setDRate(0.3);
     ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x10);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    byte pa[8]; memset(pa, 0xC0, sizeof(pa));
+    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
 
     byte buf[64]; memset(buf, 0xFF, sizeof(buf));
@@ -1016,7 +1017,7 @@ void setup() {
     byte r_patable0 = ELECHOUSE_cc1101.SpiReadReg(REG_PATABLE);
     Serial.printf("PKTCTRL0=0x%02X (expect 0x02)  MDMCFG2=0x%02X (expect 0x30)\n",
                   r_pktctrl0, r_mdmcfg2);
-    Serial.printf("FREND0  =0x%02X (expect 0x10)  PATABLE[0]=0x%02X (library value)\n",
+    Serial.printf("FREND0  =0x%02X (expect 0x11)  PATABLE[0]=0x%02X (expect 0x00)\n",
                   r_frend0, r_patable0);
 
     WiFi.mode(WIFI_STA);
