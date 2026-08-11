@@ -20,13 +20,13 @@
  *   CC1101 MISO -> GPIO12 (D6)
  *   CC1101 SCK  -> GPIO14 (D5)
  *   CC1101 CSN  -> GPIO15 (D8)
- *   CC1101 GDO0 -> GPIO4 (D2) — async TX data input
  *
  * HTTP endpoints:
  *   GET /hi    /med   /low   /off   /light  — send command
- *   GET /try?n=X   — send exactly N=X (0-5) for manual testing
  *   GET /carrier   — 3s OOK carrier test (jams physical remote if RF OK)
- *   GET /carrier2  — 5s 2-FSK carrier test
+ *   GET /fifogate  — 9s FIFO OOK gating sanity check
+ *   GET /status    — timing constants + register readback
+ *   GET /dumpregs  — full CC1101 register dump
  */
 
 #include <SPI.h>
@@ -40,7 +40,6 @@ const char* SSID     = WIFI_SSID;
 const char* PASSWORD = WIFI_PASSWORD;
 
 #define PIN_CSN      15   // GPIO15 (D8)
-#define GDO0_TX_PIN   4   // GPIO4  (D2) — CC1101 async DATA input
 
 // CC1101 register addresses
 #define REG_PKTCTRL0 0x08
@@ -67,7 +66,7 @@ const char* PASSWORD = WIFI_PASSWORD;
 // Per-command rep counts. Physical remote sends 4 reps (~60ms total).
 // More reps = more chances for fan to decode a valid frame at range.
 // LIGHT has a dimmer: short burst (~72ms physical) = toggle, long burst = dim.
-//   8 reps = ~144ms, in "short press" territory. N=5 decodes reliably at range so few reps are OK.
+//   4 reps = ~84ms, well within "short press" territory.
 // OFF (N=4) needs many reps: 4 SL symbols before SS creates more decoding failure points at range.
 #define REPS_DEFAULT  25
 #define REPS_LIGHT     4
@@ -90,9 +89,9 @@ ESP8266WebServer server(80);
 Espalexa espalexa;
 
 // ── FIFO NRZ stream builder ───────────────────────────────
-// Buffer for 15 reps × ~105 bytes = ~1575 bytes NRZ bitstream.
+// Buffer for 50 reps × ~105 bytes = ~5250 bytes NRZ bitstream.
 // 1-bits = OOK carrier on, 0-bits = carrier off.
-static byte g_stream[1600];
+static byte g_stream[5500];
 static int  g_streamBit;   // current write position (bits)
 static int  g_streamLen;   // final byte count after build
 
@@ -148,178 +147,6 @@ static void buildStream(int N) {
 }
 
 // ─────────────────────────────────────────────────────────
-static void ICACHE_RAM_ATTR fastStrobe(byte cmd) {
-    digitalWrite(PIN_CSN, LOW);
-    SPI.transfer(cmd);
-    digitalWrite(PIN_CSN, HIGH);
-}
-
-// Strobe-based OOK helper: STX (on) or SIDLE (off).
-// SIDLE is used for "off" because SFSTXON from TX is ignored in async mode (MARC stays 0x13).
-// SFSTXON-gating approach: issue SFSTXON at the END of each "off" period so the PLL
-// is locked (FSTXON state) before STX fires. STX from FSTXON is instant — no startup lag.
-// strobeBit(false, us): SIDLE → wait(us - PLL_LOCK_US) → SFSTXON [PLL starts locking]
-// strobeBit(true,  us): wait(PLL_LOCK_US) [PLL finishes] → STX → wait(us) [carrier]
-// Gap at receiver = (us-40 wait) + (40 lock) = us µs. Carrier = us µs. Both correct.
-#define PLL_LOCK_US 40    // time between SFSTXON and STX; PLL locks ~76µs so this is slightly short but works
-static void ICACHE_RAM_ATTR strobeBit(bool hi, uint32_t us) {
-    noInterrupts();
-    if (hi) {
-        delayMicroseconds(PLL_LOCK_US);  // let SFSTXON from prev "off" finish locking
-        fastStrobe(STROBE_STX);           // FSTXON → TX instantly (PLL already locked)
-        delayMicroseconds(us);            // full carrier for 'us' µs
-    } else {
-        fastStrobe(STROBE_SIDLE);
-        delayMicroseconds(us > PLL_LOCK_US ? us - PLL_LOCK_US : 0);
-        fastStrobe(STROBE_SFSTXON);       // kick off PLL lock; completes during next strobeBit(true)
-    }
-    interrupts();
-}
-
-// Strobe-based OOK TX — uses STX/SFSTXON state transitions for PA gating.
-// In async TX mode (no FIFO drain), GDO0=HIGH keeps CC1101 happy (1-bit always).
-// Ext PA follows TX-state signal on GDO2 (default IOCFG2 from library Init).
-// This works if FSTXON→TX ext-PA enable response is fast enough for 250µs pulses.
-void sendCommandStrobe(int N, const char* name) {
-    int reps = commandReps(N);
-    Serial.printf("[TX] %s N=%d strobe %d reps\n", name, N, reps);
-
-    // Use cc1101InitTx() base (IOCFG2=0x56 = inverted PA_PD: GDO2 LOW in IDLE/FSTXON, HIGH in TX).
-    // MCSM0=0x00: never auto-calibrate (default 0x18 triggers 720µs cal on every IDLE→STX).
-    // With SFSTXON-gating in strobeBit(), PLL is locked via FSTXON before each STX.
-    cc1101InitTx();
-    ELECHOUSE_cc1101.SpiWriteReg(0x18, 0x00);  // MCSM0: never auto-calibrate
-    // 0x32 = async serial TX (PKT_FORMAT=11), infinite length, no whitening.
-    // GDO0=HIGH → CC1101 OOK=1 → continuous carrier during TX state (vs 0x62=random TX which sends 50% duty-cycle noise).
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);
-    pinMode(GDO0_TX_PIN, OUTPUT);
-    digitalWrite(GDO0_TX_PIN, HIGH);
-
-    // Calibrate PLL once → FSTXON. SIDLE gating works without pre-warm:
-    // ext PA is re-enabled the moment CC1101 transitions to TX (XOSC stays on in IDLE).
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(5);
-    Serial.printf("[TX] post-cal MARC=0x%02X\n", ELECHOUSE_cc1101.SpiReadStatus(0x35));
-
-    for (int r = 0; r < reps; r++) {
-        // Header pulse 0: LS with SYNC0 timing
-        strobeBit(true,  SYNC0_H * 25);  strobeBit(false, SYNC0_L * 25);
-        // Header pulses 1-5: LS LL SL SS LL
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, SHORT_L * 25);
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, LONG_L  * 25);
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
-        // Data: N × SL
-        for (int i = 0; i < N; i++) {
-            strobeBit(true, SHORT_H * 25);  strobeBit(false, LONG_L * 25);
-        }
-        // SS command marker
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
-        // Tail
-        if (N < 5) {
-            strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L * 25);
-            for (int i = 0; i < (4 - N); i++) {
-                strobeBit(true, SHORT_H * 25);  strobeBit(false, LONG_L * 25);
-            }
-            noInterrupts();
-            delayMicroseconds(PLL_LOCK_US);   // let SFSTXON from last strobeBit(false) finish
-            fastStrobe(STROBE_STX);
-            delayMicroseconds(SHORT_H * 25);
-            interrupts();
-        } else {
-            noInterrupts();
-            delayMicroseconds(PLL_LOCK_US);   // let SFSTXON from last strobeBit(false) finish
-            fastStrobe(STROBE_STX);
-            delayMicroseconds(LONG_H * 25);
-            interrupts();
-        }
-        // GAP: 8ms SIDLE then SFSTXON so next rep's first strobeBit(true) finds PLL locked.
-        noInterrupts(); fastStrobe(STROBE_SIDLE); interrupts();
-        delay(8);
-        noInterrupts(); fastStrobe(STROBE_SFSTXON); interrupts();
-    }
-
-    fastStrobe(STROBE_SIDLE);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    pinMode(GDO0_TX_PIN, INPUT);
-    cc1101InitTx();  // restore full config
-    Serial.printf("[TX] %s done\n", name);
-}
-
-// Async OOK helper: set GDO0 high/low for `us` µs, interrupts off during pulse.
-// Interrupts re-enabled between pulses so WiFi runs in the dead-time between symbols.
-static void ICACHE_RAM_ATTR asmBit(bool hi, uint32_t us) {
-    noInterrupts();
-    digitalWrite(GDO0_TX_PIN, hi ? HIGH : LOW);
-    delayMicroseconds(us);
-    interrupts();
-}
-
-// Async GDO0 bit-bang TX.
-// In async serial mode (PKTCTRL0=0x32) the CC1101 treats GDO0 as the OOK data input:
-//   1 → internal PA on; IOCFG2=0x56 (inverted PA_PD) also enables external PA → full carrier
-//   0 → both PAs off → silence
-// PLL stays locked via STX throughout; only the PA gates per bit.
-// WiFi runs during the 8 ms inter-rep gap, so the connection stays alive.
-void sendCommandAsync(int N, const char* name) {
-    Serial.printf("[TX] %s N=%d async GDO0 %d reps\n", name, N, commandReps(N));
-
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);  // async serial TX (PKT_FORMAT=11), infinite length
-
-    pinMode(GDO0_TX_PIN, OUTPUT);
-    digitalWrite(GDO0_TX_PIN, LOW);  // PA off while PLL calibrates
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(3);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-    delayMicroseconds(100);
-
-    for (int r = 0; r < commandReps(N); r++) {
-        // Header pulse 0: LS with SYNC0 timing (shorter HIGH measured on physical remote)
-        asmBit(true,  SYNC0_H * 25);  asmBit(false, SYNC0_L * 25);
-        // Header pulses 1-5: LS LL SL SS LL
-        asmBit(true,  LONG_H  * 25);  asmBit(false, SHORT_L * 25);  // LS
-        asmBit(true,  LONG_H  * 25);  asmBit(false, LONG_L  * 25);  // LL
-        asmBit(true,  SHORT_H * 25);  asmBit(false, LONG_L  * 25);  // SL
-        asmBit(true,  SHORT_H * 25);  asmBit(false, SHORT_L * 25);  // SS
-        asmBit(true,  LONG_H  * 25);  asmBit(false, LONG_L  * 25);  // LL
-        // Data: N × SL
-        for (int i = 0; i < N; i++) {
-            asmBit(true, SHORT_H * 25);  asmBit(false, LONG_L * 25);
-        }
-        // SS command marker
-        asmBit(true,  SHORT_H * 25);  asmBit(false, SHORT_L * 25);
-        // Tail
-        if (N < 5) {
-            asmBit(true,  LONG_H  * 25);  asmBit(false, LONG_L * 25);  // LL
-            for (int i = 0; i < (4 - N); i++) {
-                asmBit(true, SHORT_H * 25);  asmBit(false, LONG_L * 25);  // SL×(4-N)
-            }
-            // Terminal SHORT_H: hold high, then drop for GAP
-            noInterrupts();
-            digitalWrite(GDO0_TX_PIN, HIGH);
-            delayMicroseconds(SHORT_H * 25);
-            interrupts();
-        } else {
-            // N=5: terminal LONG_H
-            noInterrupts();
-            digitalWrite(GDO0_TX_PIN, HIGH);
-            delayMicroseconds(LONG_H * 25);
-            interrupts();
-        }
-        // GAP: 8 ms LOW with interrupts enabled — WiFi runs here
-        noInterrupts(); digitalWrite(GDO0_TX_PIN, LOW); interrupts();
-        delay(8);
-    }
-
-    digitalWrite(GDO0_TX_PIN, LOW);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);  // restore FIFO mode
-    pinMode(GDO0_TX_PIN, INPUT);
-    Serial.printf("[TX] %s done\n", name);
-}
-
-// ─────────────────────────────────────────────────────────
 void cc1101InitTx() {
     pinMode(PIN_CSN, OUTPUT);
     digitalWrite(PIN_CSN, HIGH);
@@ -346,9 +173,7 @@ void cc1101InitTx() {
     // Default 0x30 (CCA_MODE=3) silently prevents STX from FSTXON if RSSI is above threshold.
     ELECHOUSE_cc1101.SpiWriteReg(0x17,         0x00);
     // IOCFG2=0x56 (inverted PA_PD): GDO2 LOW in IDLE/FSTXON (ext PA off), HIGH in TX (ext PA on).
-    // 0x09 (lock detector) was tried but causes VCO leakage in FSTXON: the ext PA, enabled
-    // during FSTXON, amplifies VCO signal into a low-level carrier that corrupts off-periods.
-    ELECHOUSE_cc1101.SpiWriteReg(0x00,         0x56);  // IOCFG2 = inverted PA_PD
+    ELECHOUSE_cc1101.SpiWriteReg(0x00,         0x56);
 
     byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
@@ -359,7 +184,6 @@ void cc1101InitTx() {
 // ─────────────────────────────────────────────────────────
 // FIFO NRZ OOK TX: pre-build bitstream, stream through FIFO while PA stays on.
 // PA ramps up once on entry to TX state; FIFO data bits gate OOK on/off.
-// MDMCFG2=0x30 (OOK) required — with 0x20 (reserved) gating was broken.
 void sendCommand(int N, const char* name) {
     buildStream(N);
     Serial.printf("[TX] %s N=%d FIFO mode %d reps %d bytes\n", name, N, commandReps(N), g_streamLen);
@@ -469,88 +293,6 @@ void handleDumpregs() {
     server.send(200, "text/plain", out);
 }
 
-// GET /carrier_ook — 2s ON/OFF alternation using STX/SFSTXON strobe gating.
-// OFF phase uses SFSTXON (PA off, PLL locked) rather than 0x00 FIFO data
-// (FIFO gating proved non-functional on two CC1101 modules).
-void handleCarrierOok() {
-    server.send(200, "text/plain",
-        "OOK strobe gating test (8 seconds).\n\n"
-        "WATCH SERIAL MONITOR — it will tell you exactly when to press the remote.\n\n"
-        "Schedule:\n"
-        "  0-5s   CARRIER ON   (jammed)\n"
-        "  5-10s  CARRIER OFF  (SFSTXON) <- PRESS PHYSICAL REMOTE during this window\n"
-        "  10-15s CARRIER ON\n"
-        "  15-20s CARRIER OFF  (SFSTXON) <- PRESS AGAIN if first window missed\n\n"
-        "If remote works during OFF windows → strobe PA gating works.\n"
-        "If remote stays jammed during OFF windows → something else is wrong.");
-
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setMHZ(303.92);
-    ELECHOUSE_cc1101.setModulation(2);
-    ELECHOUSE_cc1101.setPA(10);
-    ELECHOUSE_cc1101.setDRate(40);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
-    ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
-
-    byte on_buf[64]; memset(on_buf, 0xFF, sizeof(on_buf));
-
-    // Calibrate PLL, pre-fill FIFO, start TX
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, 64);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(2);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-    delay(10);
-    Serial.printf("[OOK_STROBE] MARCSTATE=0x%02X  starting 8s test\n",
-        ELECHOUSE_cc1101.SpiReadStatus(0x35));
-
-    uint32_t start = millis();
-    bool carrier_on = true;
-    uint32_t phase_end = start + 5000;
-    Serial.println("[OOK_STROBE] t=0s  CARRIER ON");
-
-    while (millis() - start < 20000) {
-        if (millis() >= phase_end) {
-            carrier_on = !carrier_on;
-            phase_end += 5000;
-            uint32_t t = millis() - start;
-            if (carrier_on) {
-                // Top up FIFO without overflow, then restart TX
-                byte rem = ELECHOUSE_cc1101.SpiReadStatus(0x3A) & 0x7F;
-                if (rem > 64) rem = 64;
-                byte fill = 64 - rem;
-                if (fill > 0) ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, fill);
-                ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-                Serial.printf("[OOK_STROBE] t=%lums  CARRIER ON\n", t);
-            } else {
-                // SFSTXON: PA off, PLL stays locked in FSTXON
-                ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-                Serial.printf("[OOK_STROBE] t=%lums  CARRIER OFF (SFSTXON) — PRESS REMOTE NOW\n", t);
-            }
-        }
-
-        // During ON phase: keep FIFO fed to prevent underflow
-        if (carrier_on) {
-            byte txb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-            if (txb & 0x80) {
-                ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-                ELECHOUSE_cc1101.SpiStrobe(0x3B);
-                ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, 64);
-                ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            } else if ((txb & 0x7F) < 32) {
-                ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, 32);
-            }
-        }
-        yield();
-    }
-
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    cc1101InitTx();
-    Serial.println("[OOK_STROBE] done");
-}
-
 // GET /status — re-print timing constants and key register readback at any time
 void handleStatus() {
     String out = "=== Fan Remote Status ===\n";
@@ -577,152 +319,60 @@ void handleStatus() {
     server.send(200, "text/plain", out);
 }
 
-// GET /try?n=X — send exactly N=X for manual brute-force testing
-void handleTry() {
-    if (!server.hasArg("n")) { server.send(400, "text/plain", "missing ?n="); return; }
-    int n = server.arg("n").toInt();
-    if (n < 0 || n > 5) { server.send(400, "text/plain", "n must be 0-5"); return; }
-    char label[16]; snprintf(label, sizeof(label), "TRY(N=%d)", n);
-    sendCommandStrobe(n, label);
-    server.send(200, "text/plain", label);
-}
+// GET /carrier → 3s OOK carrier test via FIFO.
+// Physical remote should FAIL during those 3s if CC1101 is transmitting.
+void handleCarrier() {
+    Serial.println("[CARRIER] starting 3s OOK carrier test...");
 
-// GET /lighttry?reps=N — send LIGHT (N=5) with exactly N reps, bypassing commandReps().
-// Use to probe the boundary between "toggle" (too few reps = miss) and "hold/dim" (too many).
-// Physical remote sends 4 reps (~84ms). Report what you observe for each value.
-void handleLightTry() {
-    if (!server.hasArg("reps")) { server.send(400, "text/plain", "missing ?reps="); return; }
-    int reps = server.arg("reps").toInt();
-    if (reps < 1 || reps > 250) { server.send(400, "text/plain", "reps must be 1-250"); return; }
-
-    int durationMs = reps * 21;
-    char resp[80];
-    snprintf(resp, sizeof(resp), "LIGHT %d reps (~%dms) sending...", reps, durationMs);
-    // Send response BEFORE TX so the TCP connection closes cleanly.
-    // Long TX (>1s) hangs the HTTP connection open and corrupts the lwIP stack.
-    server.send(200, "text/plain", resp);
-    // Give the TCP stack 300ms to fully close the connection before blocking TX.
-    // Without this, the lwIP stack accumulates pending events during long TX and crashes.
-    delay(300);
-
-    Serial.printf("[LIGHTTRY] LIGHT N=5, %d reps (~%dms burst)\n", reps, durationMs);
-
-    cc1101InitTx();
-    ELECHOUSE_cc1101.SpiWriteReg(0x18, 0x00);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);
-    pinMode(GDO0_TX_PIN, OUTPUT);
-    digitalWrite(GDO0_TX_PIN, HIGH);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(5);
-
-    for (int r = 0; r < reps; r++) {
-        strobeBit(true,  SYNC0_H * 25);  strobeBit(false, SYNC0_L * 25);
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, SHORT_L * 25);
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, LONG_L  * 25);
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
-        strobeBit(true,  LONG_H  * 25);  strobeBit(false, LONG_L  * 25);
-        for (int i = 0; i < 5; i++) {
-            strobeBit(true, SHORT_H * 25);  strobeBit(false, LONG_L * 25);
-        }
-        strobeBit(true,  SHORT_H * 25);  strobeBit(false, SHORT_L * 25);
-        noInterrupts();
-        delayMicroseconds(PLL_LOCK_US);
-        fastStrobe(STROBE_STX);
-        delayMicroseconds(LONG_H * 25);
-        interrupts();
-        noInterrupts(); fastStrobe(STROBE_SIDLE); interrupts();
-        delay(8);
-        noInterrupts(); fastStrobe(STROBE_SFSTXON); interrupts();
-        // Every 25 reps give WiFi stack a longer breath to prevent watchdog / lwIP issues
-        if ((r & 0x1F) == 0x1F) delay(50);
-    }
-
-    fastStrobe(STROBE_SIDLE);
+    ELECHOUSE_cc1101.Init();
+    ELECHOUSE_cc1101.setMHZ(303.92);
+    ELECHOUSE_cc1101.setModulation(2);
+    ELECHOUSE_cc1101.setPA(10);
+    ELECHOUSE_cc1101.setDRate(0.3);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
+    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    pinMode(GDO0_TX_PIN, INPUT);
-    cc1101InitTx();
-    Serial.printf("[LIGHTTRY] done\n");
-}
+    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
+    ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
 
-// GET /strobe_test?ms=X — emit 20 STX pulses of X ms each (default 10ms), 10ms off gap.
-// Used to find minimum pulse width at which the PA actually emits detectably.
-void handleStrobeTest() {
-    int pw = server.hasArg("ms") ? server.arg("ms").toInt() : 10;
-    if (pw < 1) pw = 1; if (pw > 500) pw = 500;
-    Serial.printf("[STROBE_TEST] %d pulses, %dms ON / 10ms OFF\n", 20, pw);
-
-    byte fifobuf[64]; memset(fifobuf, 0xFF, sizeof(fifobuf));
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fifobuf, 64);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(5);
-
-    for (int i = 0; i < 20; i++) {
-        ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-        delay(pw);
-        ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-        delay(10);
-        // refill FIFO
-        byte rem = ELECHOUSE_cc1101.SpiReadStatus(0x3A) & 0x7F;
-        if (rem > 64) rem = 64;
-        byte fill = 64 - rem;
-        if (fill > 0) ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fifobuf, fill);
-    }
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    Serial.println("[STROBE_TEST] done");
-    server.send(200, "text/plain", "strobe test done");
-}
-
-// GET /ooktest — OOK gating test at 0.3 kbaud (one bit = 3.3ms).
-// At this rate, even a slow PA enable RC filter would produce visible RSSI swings.
-// Sends repeating pattern: 8 bytes 0xFF (ON ~26ms) then 8 bytes 0x00 (OFF ~26ms).
-// 50ms RSSI polls on capture unit should see clear on/off if gating works at all.
-void handleOoktest() {
-    server.send(200, "text/plain",
-        "OOK gating test at 0.3 kbaud (~3ms/bit, ~26ms per byte block).\n"
-        "Watch capture unit RSSI (100ms poll). Alternating 8×0xFF / 8×0x00 blocks.\n"
-        "Should see RSSI oscillate if OOK gating works at low data rate.\n");
-
-    cc1101InitTx();
-    ELECHOUSE_cc1101.setDRate(0.3);  // 0.3 kbaud = 3.3ms per bit
-
-    byte on_buf[8];  memset(on_buf,  0xFF, sizeof(on_buf));
-    byte off_buf[8]; memset(off_buf, 0x00, sizeof(off_buf));
-
-    // Prime FIFO, calibrate, start TX
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, 8);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(3);
+    byte buf[64]; memset(buf, 0xFF, sizeof(buf));
+    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
     ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-    delay(5);
-    Serial.printf("[OOKTEST] started MARC=0x%02X  0.3kbaud\n",
-        ELECHOUSE_cc1101.SpiReadStatus(0x35));
+
+    delay(10);
+    byte marc0 = ELECHOUSE_cc1101.SpiReadStatus(0x35);
+    Serial.printf("[CARRIER] MARCSTATE after STX = 0x%02X (expect 0x13=TX)\n", marc0);
 
     uint32_t start = millis();
-    bool phase = true;  // true=0xFF, false=0x00
-    int repsDone = 0;
+    uint32_t lastLog = 0;
+    byte fill[32]; memset(fill, 0xFF, sizeof(fill));
 
-    while (millis() - start < 9000) {
-        byte txb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-        if (txb & 0x80) {
-            // Underflow — restart
+    while (millis() - start < 3000) {
+        byte txbytes = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
+        if (txbytes & 0x80) {
             ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
             ELECHOUSE_cc1101.SpiStrobe(0x3B);
-            phase = !phase;
-            byte* buf = phase ? on_buf : off_buf;
-            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, 8);
+            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
             ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            repsDone++;
-            if (repsDone % 4 == 0)
-                Serial.printf("[OOKTEST] t=%lums phase=%s\n",
-                    millis()-start, phase?"ON(FF)":"OFF(00)");
+            Serial.printf("[CARRIER] underflow at %lums — restarted\n", millis() - start);
+        } else if ((txbytes & 0x7F) < 32) {
+            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill, sizeof(fill));
+        }
+        if (millis() - lastLog >= 500) {
+            byte ms = ELECHOUSE_cc1101.SpiReadStatus(0x35);
+            byte tb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
+            Serial.printf("[CARRIER] t=%lums  MARC=0x%02X  TXBYTES=%d%s\n",
+                millis()-start, ms, tb & 0x7F, (tb & 0x80) ? " UNDERFLOW!" : "");
+            lastLog = millis();
         }
         yield();
     }
 
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    ELECHOUSE_cc1101.setDRate(40);  // restore 40 kbaud
-    Serial.println("[OOKTEST] done");
+    cc1101InitTx();
+    Serial.println("[CARRIER] done");
+    server.send(200, "text/plain",
+        "3s OOK carrier done.\nDid the physical remote FAIL during those 3 seconds?");
 }
 
 // GET /fifogate — test whether FIFO data bytes actually gate the OOK carrier.
@@ -783,184 +433,15 @@ void handleFifogate() {
     Serial.println("[FIFOGATE] done");
 }
 
-// GET /marctest — confirm fastStrobe(STX) actually reaches TX state (MARCSTATE=0x13).
-// Uses 10ms pulse so RSSI is measurable on capture unit. No noInterrupts().
-void handleMarctest() {
-    cc1101InitTx();
-    byte fifobuf[64]; memset(fifobuf, 0xFF, sizeof(fifobuf));
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fifobuf, 64);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(3);
-    byte marc_pre = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-
-    fastStrobe(STROBE_STX);
-    delay(10);
-    byte marc_tx  = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-    fastStrobe(STROBE_SFSTXON);
-    delay(2);
-    byte marc_off = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-
-    char out[128];
-    snprintf(out, sizeof(out),
-        "pre-STX MARC=0x%02X (want 0x12=FSTXON)\n"
-        "post-STX MARC=0x%02X (want 0x13=TX)\n"
-        "post-SFSTXON MARC=0x%02X (want 0x12=FSTXON)\n",
-        marc_pre, marc_tx, marc_off);
-    Serial.print(out);
-    server.send(200, "text/plain", out);
-}
-
-// ── RF emission diagnostics ───────────────────────────────
-
-// GET /carrier → 3s OOK carrier test via FIFO.
-// Physical remote should FAIL during those 3s if CC1101 is transmitting.
-void handleCarrier() {
-    Serial.println("[CARRIER] starting 3s OOK carrier test...");
-
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setMHZ(303.92);
-    ELECHOUSE_cc1101.setModulation(2);
-    ELECHOUSE_cc1101.setPA(10);
-    ELECHOUSE_cc1101.setDRate(0.3);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
-    ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
-
-    byte buf[64]; memset(buf, 0xFF, sizeof(buf));
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-
-    delay(10);
-    byte marc0 = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-    Serial.printf("[CARRIER] MARCSTATE after STX = 0x%02X (expect 0x13=TX)\n", marc0);
-
-    uint32_t start = millis();
-    uint32_t lastLog = 0;
-    byte fill[32]; memset(fill, 0xFF, sizeof(fill));
-
-    while (millis() - start < 3000) {
-        byte txbytes = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-        if (txbytes & 0x80) {
-            ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-            ELECHOUSE_cc1101.SpiStrobe(0x3B);
-            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
-            ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            Serial.printf("[CARRIER] underflow at %lums — restarted\n", millis() - start);
-        } else if ((txbytes & 0x7F) < 32) {
-            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill, sizeof(fill));
-        }
-        if (millis() - lastLog >= 500) {
-            byte ms = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-            byte tb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-            Serial.printf("[CARRIER] t=%lums  MARC=0x%02X  TXBYTES=%d%s\n",
-                millis()-start, ms, tb & 0x7F, (tb & 0x80) ? " UNDERFLOW!" : "");
-            lastLog = millis();
-        }
-        yield();
-    }
-
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    cc1101InitTx();
-    Serial.println("[CARRIER] done");
-    server.send(200, "text/plain",
-        "3s OOK carrier done.\nDid the physical remote FAIL during those 3 seconds?");
-}
-
-// GET /carrier2 → 5s 2-FSK carrier test.
-void handleCarrier2() {
-    Serial.println("[CARRIER2] starting 5s 2-FSK carrier test...");
-
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setMHZ(303.92);
-    ELECHOUSE_cc1101.setModulation(0);
-    ELECHOUSE_cc1101.setPA(10);
-    ELECHOUSE_cc1101.setDRate(1.0);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-
-    byte buf[64]; memset(buf, 0xAA, sizeof(buf));
-    ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-
-    delay(10);
-    byte marc0 = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-    Serial.printf("[CARRIER2] MARCSTATE after STX = 0x%02X (expect 0x13=TX)\n", marc0);
-
-    uint32_t start = millis();
-    uint32_t lastLog = 0;
-    byte fill[32]; memset(fill, 0xAA, sizeof(fill));
-
-    while (millis() - start < 5000) {
-        byte txbytes = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-        if (txbytes & 0x80) {
-            ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-            ELECHOUSE_cc1101.SpiStrobe(0x3B);
-            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
-            ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            Serial.printf("[CARRIER2] underflow at %lums — restarted\n", millis() - start);
-        } else if ((txbytes & 0x7F) < 32) {
-            ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill, sizeof(fill));
-        }
-        if (millis() - lastLog >= 500) {
-            byte ms = ELECHOUSE_cc1101.SpiReadStatus(0x35);
-            byte tb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-            Serial.printf("[CARRIER2] t=%lums  MARC=0x%02X  TXBYTES=%d%s\n",
-                millis()-start, ms, tb & 0x7F, (tb & 0x80) ? " UNDERFLOW!" : "");
-            lastLog = millis();
-        }
-        yield();
-    }
-
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    cc1101InitTx();
-    Serial.println("[CARRIER2] done");
-    server.send(200, "text/plain",
-        "5s 2-FSK carrier done.\nDid the physical remote FAIL during those 5 seconds?");
-}
-
-// GET /asyncgate — verify async GDO0 mode gates the PA correctly.
-// Holds GDO0 HIGH 3s (carrier on), LOW 3s (PA off), HIGH 3s (carrier on).
-// If capture unit RSSI drops to noise floor during LOW phase → async gating works.
-// Run this before trusting /hi /med etc on the fan.
-void handleAsyncgate() {
-    server.send(200, "text/plain",
-        "Async GDO0 PA gating test (9s).\n"
-        "Watch capture unit RSSI:\n"
-        "  0-3s:  GDO0 HIGH → expect -24 dBm (carrier on)\n"
-        "  3-6s:  GDO0 LOW  → expect -97 dBm (PA off)\n"
-        "  6-9s:  GDO0 HIGH → expect -24 dBm (carrier on)\n");
-
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x32);  // async serial TX
-    pinMode(GDO0_TX_PIN, OUTPUT);
-    digitalWrite(GDO0_TX_PIN, LOW);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
-    delay(3);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-    delay(5);
-    Serial.printf("[ASYNCGATE] MARC=0x%02X\n",
-        ELECHOUSE_cc1101.SpiReadStatus(0x35));
-
-    Serial.println("[ASYNCGATE] GDO0 HIGH — carrier ON");
-    digitalWrite(GDO0_TX_PIN, HIGH);
-    delay(3000);
-
-    Serial.println("[ASYNCGATE] GDO0 LOW — carrier OFF");
-    digitalWrite(GDO0_TX_PIN, LOW);
-    delay(3000);
-
-    Serial.println("[ASYNCGATE] GDO0 HIGH — carrier ON");
-    digitalWrite(GDO0_TX_PIN, HIGH);
-    delay(3000);
-
-    digitalWrite(GDO0_TX_PIN, LOW);
-    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
-    ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
-    pinMode(GDO0_TX_PIN, INPUT);
-    Serial.println("[ASYNCGATE] done");
-}
+// ── Alexa (Espalexa) callbacks ────────────────────────────
+// brightness > 0 = "turn on"; 0 = "turn off".
+// Speed commands only fire on "turn on" to avoid accidental OFF on "turn off Fan High".
+// Light and Fan Off fire on any state change (both are effectively one-shot toggles/stops).
+void alexaFanHigh(uint8_t b)  { if (b) sendCommand(CMD_HI,    "ALEXA:HI"); }
+void alexaFanMed(uint8_t b)   { if (b) sendCommand(CMD_MED,   "ALEXA:MED"); }
+void alexaFanLow(uint8_t b)   { if (b) sendCommand(CMD_LOW,   "ALEXA:LOW"); }
+void alexaFanOff(uint8_t b)   {        sendCommand(CMD_OFF,   "ALEXA:OFF"); }
+void alexaFanLight(uint8_t b) {        sendCommand(CMD_LIGHT, "ALEXA:LIGHT"); }
 
 void handleRoot() {
     server.send(200, "text/html",
@@ -979,17 +460,8 @@ void handleRoot() {
         "<a href='/low'>LOW</a>"
         "<a href='/off'>OFF</a>"
         "<a href='/light'>LIGHT (toggle)</a>"
-        "<a href='/carrier' style='background:#555;font-size:0.85em'>RF TEST OOK (3s carrier)</a>"
-        "<a href='/asyncgate'  style='background:#006080;font-size:0.85em'>ASYNC GATE TEST (9s verify PA off)</a>"
-        "<a href='/carrier_ook' style='background:#c04000;font-size:0.85em'>OOK GATING TEST (4s alternating)</a>"
-        "<a href='/carrier2' style='background:#555;font-size:0.85em'>RF TEST 2-FSK (5s)</a>"
-        "<a href='/try?n=3' style='background:#555;font-size:0.85em'>TRY N=3 (unknown cmd)</a>"
-        "<a href='/lighttry?reps=5'   style='background:#404;font-size:0.85em'>LIGHT ON  — 5 reps (~105ms)</a>"
-        "<a href='/try?n=3'           style='background:#404;font-size:0.85em'>LIGHT OFF? — N=3 (unknown cmd)</a>"
-        "<a href='/lighttry?reps=50'  style='background:#404;font-size:0.85em'>LIGHT hold — 50 reps (~1s)</a>"
-        "<a href='/lighttry?reps=100' style='background:#404;font-size:0.85em'>LIGHT hold — 100 reps (~2.1s)</a>"
-        "<a href='/lighttry?reps=150' style='background:#404;font-size:0.85em'>LIGHT hold — 150 reps (~3.2s)</a>"
-        "<a href='/lighttry?reps=200' style='background:#404;font-size:0.85em'>LIGHT hold — 200 reps (~4.2s)</a>"
+        "<a href='/carrier'  style='background:#555;font-size:0.85em'>RF TEST (3s carrier)</a>"
+        "<a href='/fifogate' style='background:#555;font-size:0.85em'>OOK GATE TEST (9s)</a>"
         "<a href='/status'   style='background:#555;font-size:0.85em'>STATUS / TIMING</a>"
         "<a href='/dumpregs' style='background:#555;font-size:0.85em'>DUMP REGISTERS</a>"
         "</body></html>"
@@ -997,16 +469,6 @@ void handleRoot() {
 }
 
 // ─────────────────────────────────────────────────────────
-// ── Alexa (Espalexa) callbacks ────────────────────────────
-// brightness > 0 = "turn on"; 0 = "turn off".
-// Speed commands only fire on "turn on" to avoid accidental OFF on "turn off Fan High".
-// Light and Fan Off fire on any state change (both are effectively one-shot toggles/stops).
-void alexaFanHigh(uint8_t b)  { if (b) sendCommand(CMD_HI,    "ALEXA:HI"); }
-void alexaFanMed(uint8_t b)   { if (b) sendCommand(CMD_MED,   "ALEXA:MED"); }
-void alexaFanLow(uint8_t b)   { if (b) sendCommand(CMD_LOW,   "ALEXA:LOW"); }
-void alexaFanOff(uint8_t b)   {        sendCommand(CMD_OFF,   "ALEXA:OFF"); }
-void alexaFanLight(uint8_t b) {        sendCommand(CMD_LIGHT, "ALEXA:LIGHT"); }
-
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -1041,24 +503,16 @@ void setup() {
     }
     Serial.printf("\nIP: http://%s\n", WiFi.localIP().toString().c_str());
 
-    server.on("/",        handleRoot);
-    server.on("/carrier", handleCarrier);
-    server.on("/carrier2",handleCarrier2);
-    server.on("/hi",      handleHi);
-    server.on("/med",     handleMed);
-    server.on("/low",     handleLow);
-    server.on("/off",     handleOff);
-    server.on("/light",   handleLight);
-    server.on("/strobe_test", handleStrobeTest);
-    server.on("/ooktest",     handleOoktest);
-    server.on("/fifogate",    handleFifogate);
-    server.on("/marctest",    handleMarctest);
-    server.on("/try",         handleTry);
-    server.on("/lighttry",    handleLightTry);
-    server.on("/status",      handleStatus);
-    server.on("/dumpregs",    handleDumpregs);
-    server.on("/carrier_ook", handleCarrierOok);
-    server.on("/asyncgate",   handleAsyncgate);
+    server.on("/",         handleRoot);
+    server.on("/hi",       handleHi);
+    server.on("/med",      handleMed);
+    server.on("/low",      handleLow);
+    server.on("/off",      handleOff);
+    server.on("/light",    handleLight);
+    server.on("/carrier",  handleCarrier);
+    server.on("/fifogate", handleFifogate);
+    server.on("/status",   handleStatus);
+    server.on("/dumpregs", handleDumpregs);
 
     // Alexa discovery: forward unrecognised URIs to espalexa before returning 404.
     server.onNotFound([]() {
