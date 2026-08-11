@@ -234,22 +234,22 @@ void handleLight() { server.send(200, "text/plain", "OK: LIGHT"); delay(50); sen
 
 // GET /dumpregs — read back all key CC1101 registers for verification
 void handleDumpregs() {
-    struct { const char* name; uint8_t addr; uint8_t expect; bool status; } regs[] = {
-        {"IOCFG0",   0x00, 0x3F, false},
-        {"PKTCTRL0", 0x08, 0x02, false},
-        {"PKTCTRL1", 0x07, 0x04, false},
-        {"MDMCFG4",  0x10, 0x00, false},
-        {"MDMCFG3",  0x11, 0x00, false},
-        {"MDMCFG2",  0x12, 0x30, false},
-        {"MDMCFG1",  0x13, 0x00, false},
-        {"FREND0",   0x22, 0x11, false},
-        {"MCSM0",    0x18, 0x00, false},
-        {"MCSM1",    0x17, 0x00, false},
-        {"FREQ2",    0x0D, 0x00, false},
-        {"FREQ1",    0x0E, 0x00, false},
-        {"FREQ0",    0x0F, 0x00, false},
-        {"CHANNR",   0x0A, 0x00, false},
-        {"FSCTRL1",  0x0B, 0x00, false},
+    struct { const char* name; uint8_t addr; } regs[] = {
+        {"IOCFG2",   0x00},
+        {"PKTCTRL0", 0x08},
+        {"PKTCTRL1", 0x07},
+        {"MDMCFG4",  0x10},
+        {"MDMCFG3",  0x11},
+        {"MDMCFG2",  0x12},
+        {"MDMCFG1",  0x13},
+        {"FREND0",   0x22},
+        {"MCSM0",    0x18},
+        {"MCSM1",    0x17},
+        {"FREQ2",    0x0D},
+        {"FREQ1",    0x0E},
+        {"FREQ0",    0x0F},
+        {"CHANNR",   0x0A},
+        {"FSCTRL1",  0x0B},
     };
 
     String out = "CC1101 Register Dump\n";
