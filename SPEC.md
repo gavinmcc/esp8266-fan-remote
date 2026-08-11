@@ -99,19 +99,26 @@ was correct but the buttons were mislabelled. OFF (N=4) was correct in both sets
 
 ## CC1101 Configuration
 
-TX is implemented using CC1101 FIFO mode. The OOK pulse pattern is pre-computed as an NRZ byte stream at 40 kbaud (25 µs/bit) and streamed through the CC1101 TX FIFO.
+TX uses CC1101 FIFO mode. The OOK pulse pattern is pre-computed as an NRZ byte stream at 40 kbaud (25 µs/bit) and streamed through the CC1101 TX FIFO.
 
-| Register  | Value  | Purpose                                              |
-|-----------|--------|------------------------------------------------------|
-| PKTCTRL0  | `0x02` | FIFO mode, infinite packet length, no CRC, no whitening |
-| MDMCFG2   | `0x20` | OOK modulation, no sync word                         |
-| FREND0    | `0x10` | OOK=1 uses PATABLE[0] (carrier on); OOK=0 = PA off  |
-| DRATE     | 40 kbaud | via `setDRate(40)`                                 |
-| PATABLE[0]| `0xC0` | ~10 dBm TX power, set by `setPA(10)`                |
+| Register   | Value    | Purpose                                               |
+|------------|----------|-------------------------------------------------------|
+| PKTCTRL0   | `0x02`   | FIFO mode, infinite packet length, no CRC, no whitening |
+| MDMCFG2    | `0x30`   | OOK modulation, no sync word                          |
+| FREND0     | `0x11`   | OOK=1 uses PATABLE[1] (carrier on); OOK=0 = PATABLE[0] (PA off) |
+| DRATE      | 40 kbaud | via `setDRate(40)`                                    |
+| PATABLE[0] | `0x00`   | OOK=0 state — PA off (carrier silence)                |
+| PATABLE[1] | `0xC0`   | OOK=1 state — ~10 dBm TX power                       |
 
-> **FREND0 note:** The SmartRC library's `setModulation(2)` writes `FREND0=0x11`, which routes
-> OOK=1 to PATABLE[1] (default 0x00 = no carrier). Explicitly writing `0x10` after library init
-> fixes this so OOK=1 uses PATABLE[0] (the power level set by `setPA()`).
+**Critical PATABLE note:** `PATABLE[0]` must be `0x00`, not the library default `0xC0`.
+If all 8 PATABLE entries are `0xC0`, OOK=0 still drives full carrier and no modulation
+reaches the fan. The firmware writes this explicitly after library init:
+
+```cpp
+ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0, 0x11);
+byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
+ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
+```
 
 ## FIFO Encoding (40 kbaud NRZ)
 
@@ -125,7 +132,17 @@ At 40 kbaud, 1 bit = 25 µs. Each OOK pulse phase is a run of 1-bits (carrier on
 | LONG_L  | —       | 32       | 800        | ~790      |
 | GAP     | —       | 320      | 8000       | ~8000     |
 
-Total stream per button press: 4 reps × 838 bits = 3352 bits = ~420 bytes.
+Each rep is 838 bits. The firmware sends more reps than the original remote to improve reliability:
+
+| Command | REPS | Total bits | Duration |
+|---------|------|------------|---------|
+| HI      | 25   | 20,950     | ~525 ms |
+| MED     | 25   | 20,950     | ~525 ms |
+| LOW     | 25   | 20,950     | ~525 ms |
+| OFF     | 50   | 41,900     | ~1050 ms |
+| LIGHT   | 4    | 3,352      | ~84 ms  |
+
+OFF uses more reps for reliability. LIGHT uses fewer — more than ~5 reps triggers the dimmer instead of toggling.
 
 ## TX Sequence
 
@@ -147,26 +164,23 @@ Raw pulses captured using `capture/capture.ino`:
 
 ## Current Status
 
-All registers confirmed correct (`/dumpregs` and `/status`). Firmware encodes protocol
-correctly and FIFO streams cleanly (no underflows, TXBYTES drains). However, no fan
-response observed across all 6 N values (0–5) with 15 reps.
+**Fully working** as of 2026-08-10. All five commands (HI/MED/LOW/OFF/LIGHT) control the fan
+reliably at 3 m. LIGHT toggles in both directions (ON→OFF and OFF→ON).
 
-**OOK gating test result**: `/carrier_ook` (2s ON / 2s OFF alternation at 40 kbaud)
-showed the physical remote stayed jammed throughout both OFF windows. This means
-the PA does not gate off when FIFO data is 0x00 — the carrier is continuous in TX state
-regardless of FIFO contents.
+Range improved from ~1.2 m (earlier strobe approach) to 3 m after switching to FIFO mode —
+the PA stays continuously warm throughout the burst rather than cold-starting per pulse.
 
-Suspected cause: hardware defect on the specific E07-M1010 module unit. Two units
-available; second unit swap is the immediate next diagnostic step.
+Alexa voice control works via Espalexa (see README for setup and required library patch).
 
-## What Was Investigated
+## Investigation History
 
 | Approach | Outcome |
 |----------|---------|
-| 73-bit byte-based protocol (original analysis) | Wrong — reanalysis of 12 captures shows a 13-pulse position-encoded protocol |
-| Async GDO0 bit-bang (PKTCTRL0=0x32) | CC1101 enters TX state but GDO0 does not modulate OOK on E07-M1010 |
-| FIFO mode (PKTCTRL0=0x02) | TXBYTES drains cleanly, no underflows — but OOK gating unconfirmed |
-| FREND0=0x11 (library default) | OOK carrier broken — fixed with 0x10 |
+| 73-bit byte-based protocol (original analysis) | Wrong — reanalysis shows 13-pulse position-encoded protocol |
+| Async GDO0 bit-bang (PKTCTRL0=0x32) | CC1101 enters TX state but GDO0 does not modulate OOK |
+| FIFO mode (PKTCTRL0=0x02) | TXBYTES drains cleanly, no underflows |
+| FREND0=0x10 (manual fix attempt) | Wrong — OOK=1 still used PATABLE[0]=0x00 → no carrier |
+| FREND0=0x11 + PATABLE all 0xC0 | OOK=0 drove full carrier — gating still broken |
+| FREND0=0x11 + PATABLE[0]=0x00, [1]=0xC0 | Correct — OOK properly gates carrier on/off |
 | MDMCFG2=0x20 (reserved modulation) | Emits carrier but no OOK gating — fixed with 0x30 |
-| OOK gating test (2s ON/OFF via FIFO) | PA stayed on during 0x00 phase — gating not working on current unit |
-| Carrier jamming test | Physical remote reliably jammed at 303.92 MHz — RF path confirmed |
+| First CC1101 unit (E07-M1010) | Suspected hardware defect — replaced with E07-M1101D |
