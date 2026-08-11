@@ -122,4 +122,10 @@ Without this, the PA drives full carrier in both the on and off states and no mo
 ## Target fan
 
 RHINE UC7070T ceiling fan, DIP switch address `E7 80 29`.
-See [SPEC.md](SPEC.md) for full protocol details and how to adapt for other addresses.
+See [SPEC.md](SPEC.md) for full protocol details.
+
+> **Note on DIP switch compatibility:** The OOK frame was captured from a single remote at one
+> specific DIP switch setting. It is not yet known which part of the frame encodes the address,
+> so the firmware is implicitly hard-coded to DIP switch `E7 80 29`. To adapt it for a different
+> setting, capture frames from that remote using `capture/capture.ino` and compare the header
+> pulses against those in SPEC.md to identify which bits change.
