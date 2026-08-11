@@ -3,6 +3,8 @@
 WiFi-controlled ceiling fan remote using an ESP8266 and CC1101 433 MHz transceiver.
 Replays captured OOK RF codes to control a RHINE UC7070T ceiling fan over HTTP and via Alexa.
 
+![Device testing](device_testing.jpg)
+
 ## Hardware
 
 | Component | Notes |
