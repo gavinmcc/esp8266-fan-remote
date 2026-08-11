@@ -5,6 +5,8 @@ Replays captured OOK RF codes to control a RHINE UC7070T ceiling fan over HTTP a
 
 ![Device testing](device_testing.jpg)
 
+*Left to right: the original UC7070T remote, the TX prototype (sends fan commands over WiFi), and the RX prototype (captures raw OOK pulses for protocol analysis).*
+
 ## Hardware
 
 | Component | Notes |
