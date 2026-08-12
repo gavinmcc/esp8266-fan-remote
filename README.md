@@ -238,6 +238,8 @@ RX serial open: /dev/ttyUSB0
 The capture unit's E07-M1010 module is rated 300–348 MHz so 433 MHz reception is
 marginal — touch the two antennas together when testing Girls fan commands.
 
+![Test harness](test_harness.jpg)
+
 ### Tuning the capture unit frequency manually
 
 The capture unit accepts serial commands at 115200 baud:
