@@ -154,8 +154,8 @@ See [SPEC.md](SPEC.md) for full protocol details on both fans.
 
 | Room    | Model       | DIP address | Notes |
 |---------|-------------|-------------|-------|
-| Bedroom | RHINE UC7070T | `E7 80 29` | 303.92 MHz |
-| Girls   | SMC-5060-RF   | (unknown)  | 433.92 MHz |
+| Bedroom | RHINE UC7070T | `E7 80 29`         | 303.92 MHz |
+| Girls   | SMC-5060-RF   | `OFF ON OFF ON` (sw 1–4) | 433.92 MHz |
 
 > **DIP switch encoding:** The address is not an explicit field in the frame. Changing the DIP
 > switch changes which N value the remote transmits for each command — the receiver only responds

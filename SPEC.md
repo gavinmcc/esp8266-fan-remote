@@ -239,6 +239,8 @@ N=2 and N=6 are not used.
 
 ## Address Encoding
 
+DIP switch setting (physical remote, switches 1–4): **OFF ON OFF ON**
+
 The DIP switch address is implicitly encoded in the N-value mapping: changing the
 DIP switch changes which N value the remote sends for each command. The receiver
 responds only to the N values that match its programmed DIP setting. No explicit
