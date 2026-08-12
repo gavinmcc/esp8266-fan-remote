@@ -250,11 +250,11 @@ void sendCommandG(int N, const char* name) {
 }
 
 // ── HTTP handlers — Bedroom fan ───────────────────────────
-void handleHi()    { server.send(200, "text/plain", "OK: HI");    delay(50); sendCommandB(B_CMD_HI,    "HI"); }
-void handleMed()   { server.send(200, "text/plain", "OK: MED");   delay(50); sendCommandB(B_CMD_MED,   "MED"); }
-void handleLow()   { server.send(200, "text/plain", "OK: LOW");   delay(50); sendCommandB(B_CMD_LOW,   "LOW"); }
-void handleOff()   { server.send(200, "text/plain", "OK: OFF");   delay(50); sendCommandB(B_CMD_OFF,   "OFF"); }
-void handleLight() { server.send(200, "text/plain", "OK: LIGHT"); delay(50); sendCommandB(B_CMD_LIGHT, "LIGHT"); }
+void handleHi()    { server.send(200, "text/plain", "OK: BEDROOM HI");    delay(50); sendCommandB(B_CMD_HI,    "BED:HI"); }
+void handleMed()   { server.send(200, "text/plain", "OK: BEDROOM MED");   delay(50); sendCommandB(B_CMD_MED,   "BED:MED"); }
+void handleLow()   { server.send(200, "text/plain", "OK: BEDROOM LOW");   delay(50); sendCommandB(B_CMD_LOW,   "BED:LOW"); }
+void handleOff()   { server.send(200, "text/plain", "OK: BEDROOM OFF");   delay(50); sendCommandB(B_CMD_OFF,   "BED:OFF"); }
+void handleLight() { server.send(200, "text/plain", "OK: BEDROOM LIGHT"); delay(50); sendCommandB(B_CMD_LIGHT, "BED:LIGHT"); }
 
 // ── HTTP handlers — Girls fan ─────────────────────────────
 void handleGHi()    { server.send(200, "text/plain", "OK: GIRLS HI");    delay(50); sendCommandG(G_CMD_HI,    "G:HI"); }
@@ -479,11 +479,11 @@ void handleRoot() {
         "</style></head><body>"
         "<h2>Fan Remote</h2>"
         "<h3>Bedroom (303 MHz)</h3>"
-        "<a href='/hi'>HI</a>"
-        "<a href='/med'>MED</a>"
-        "<a href='/low'>LOW</a>"
-        "<a href='/off'>OFF</a>"
-        "<a href='/light'>LIGHT (toggle)</a>"
+        "<a href='/bedroom/hi'>HI</a>"
+        "<a href='/bedroom/med'>MED</a>"
+        "<a href='/bedroom/low'>LOW</a>"
+        "<a href='/bedroom/off'>OFF</a>"
+        "<a href='/bedroom/light'>LIGHT (toggle)</a>"
         "<h3>Girls (433 MHz)</h3>"
         "<a href='/girls/hi'>HI</a>"
         "<a href='/girls/med'>MED</a>"
@@ -528,18 +528,18 @@ void setup() {
     Serial.printf("\nIP: http://%s\n", WiFi.localIP().toString().c_str());
 
     // Bedroom fan routes
-    server.on("/",          handleRoot);
-    server.on("/hi",        handleHi);
-    server.on("/med",       handleMed);
-    server.on("/low",       handleLow);
-    server.on("/off",       handleOff);
-    server.on("/light",     handleLight);
+    server.on("/",               handleRoot);
+    server.on("/bedroom/hi",     handleHi);
+    server.on("/bedroom/med",    handleMed);
+    server.on("/bedroom/low",    handleLow);
+    server.on("/bedroom/off",    handleOff);
+    server.on("/bedroom/light",  handleLight);
     // Girls fan routes
-    server.on("/girls/hi",    handleGHi);
-    server.on("/girls/med",   handleGMed);
-    server.on("/girls/low",   handleGLow);
-    server.on("/girls/off",   handleGOff);
-    server.on("/girls/light", handleGLight);
+    server.on("/girls/hi",       handleGHi);
+    server.on("/girls/med",      handleGMed);
+    server.on("/girls/low",      handleGLow);
+    server.on("/girls/off",      handleGOff);
+    server.on("/girls/light",    handleGLight);
     // Diagnostics
     server.on("/carrier",   handleCarrier);
     server.on("/fifogate",  handleFifogate);

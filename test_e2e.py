@@ -29,11 +29,11 @@ RSSI_SIGNAL_THRESHOLD = -70   # dBm — anything above this during TX counts as 
 RX_LISTEN_SECONDS     = 2.5   # how long to listen on RX after firing each command (OFF takes ~1.05s)
 
 COMMANDS = [
-    ("HI",    "/hi",    "OK: HI"),
-    ("MED",   "/med",   "OK: MED"),
-    ("LOW",   "/low",   "OK: LOW"),
-    ("OFF",   "/off",   "OK: OFF"),
-    ("LIGHT", "/light", "OK: LIGHT"),
+    ("BED:HI",    "/bedroom/hi",    "OK: BEDROOM HI"),
+    ("BED:MED",   "/bedroom/med",   "OK: BEDROOM MED"),
+    ("BED:LOW",   "/bedroom/low",   "OK: BEDROOM LOW"),
+    ("BED:OFF",   "/bedroom/off",   "OK: BEDROOM OFF"),
+    ("BED:LIGHT", "/bedroom/light", "OK: BEDROOM LIGHT"),
 ]
 
 EXPECTED_REGISTERS = {

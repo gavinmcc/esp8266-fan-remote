@@ -83,13 +83,13 @@ Navigate to `http://<ip>/` for the web UI, or call endpoints directly:
 
 **Bedroom fan (303.92 MHz):**
 
-| Endpoint   | Action              |
-|------------|---------------------|
-| `/hi`      | Fan high speed      |
-| `/med`     | Fan medium speed    |
-| `/low`     | Fan low speed       |
-| `/off`     | Fan off             |
-| `/light`   | Toggle light on/off |
+| Endpoint          | Action              |
+|-------------------|---------------------|
+| `/bedroom/hi`     | Fan high speed      |
+| `/bedroom/med`    | Fan medium speed    |
+| `/bedroom/low`    | Fan low speed       |
+| `/bedroom/off`    | Fan off             |
+| `/bedroom/light`  | Toggle light on/off |
 
 **Girls fan (433.92 MHz):**
 
