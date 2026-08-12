@@ -56,6 +56,42 @@ def http_get(url, timeout=5):
         return None, str(e)
 
 
+def parse_pulses(line):
+    """Extract [(hi_us, lo_us), ...] from a capture line like '+225-475 +225-250 ...'"""
+    return [(int(h), int(l)) for h, l in re.findall(r'\+(\d+)-(\d+)', line)]
+
+
+def decode_N(pulses, protocol, timing):
+    """
+    Decode the N value from a captured frame.
+
+    UC7070T:  skip 6-pulse header, count SL before first SS in data section.
+    SMC5060RF: count SL before first SS from pulse 0.
+
+    Returns N (int) or None if the frame doesn't parse.
+    """
+    hi_thresh = (timing['short_h'] + timing['long_h']) / 2 * 25  # midpoint in µs
+    lo_thresh = (timing['short_l'] + timing['long_l']) / 2 * 25
+
+    def sym(hi, lo):
+        return ('S' if hi < hi_thresh else 'L') + ('S' if lo < lo_thresh else 'L')
+
+    start = 6 if protocol == 'UC7070T' else 0
+    if len(pulses) <= start:
+        return None
+
+    N = 0
+    for hi, lo in pulses[start:]:
+        s = sym(hi, lo)
+        if s == 'SL':
+            N += 1
+        elif s == 'SS':
+            return N
+        else:
+            return None  # unexpected symbol before SS
+    return None
+
+
 def auto_detect_rx_port():
     ports = sorted(glob.glob("/dev/ttyUSB*"))
     if not ports:
@@ -194,6 +230,8 @@ def run_tests(tx_base, rx_port):
 
                 rf_ok    = None
                 rf_label = ""
+                proto_ok = None
+                captures = []
                 if "error" in rx_results:
                     rf_label = f"RX error: {rx_results['error']}"
                 elif rx_results:
@@ -205,14 +243,34 @@ def run_tests(tx_base, rx_port):
                     else:
                         rf_label = f"peak RSSI {max_rssi} dBm ({'signal seen' if rf_ok else 'no signal'})"
 
-                overall = http_ok and (rf_ok is not False)
+                # Protocol validation: decode N from captured frames
+                proto_label = ""
+                if captures:
+                    expected_N = dev['commands'][key]['N']
+                    decoded    = [decode_N(parse_pulses(f), dev['protocol'], dev['timing'])
+                                  for f in captures]
+                    decoded    = [n for n in decoded if n is not None]
+                    if not decoded:
+                        proto_ok    = False
+                        proto_label = "  N=? (decode failed)"
+                    else:
+                        unique = set(decoded)
+                        got_N  = decoded[0] if len(unique) == 1 else f"mixed{sorted(unique)}"
+                        if len(unique) == 1 and decoded[0] == expected_N:
+                            proto_ok    = True
+                            proto_label = f"  N={got_N} ✓"
+                        else:
+                            proto_ok    = False
+                            proto_label = f"  N={got_N} (expected {expected_N}) ✗"
+
+                overall = http_ok and (rf_ok is not False) and (proto_ok is not False)
                 if overall:
                     passed += 1
                 else:
                     failed += 1
 
                 http_result = "ok" if http_ok else f"FAIL (status={status}, body={body!r})"
-                print(f"  {'PASS' if overall else 'FAIL'}  {label:10s}  HTTP={http_result}  RF={rf_label}")
+                print(f"  {'PASS' if overall else 'FAIL'}  {label:10s}  HTTP={http_result}  RF={rf_label}{proto_label}")
 
     finally:
         if rx_ser:
