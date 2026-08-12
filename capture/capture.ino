@@ -75,7 +75,7 @@ void setupCC1101() {
   Serial.println("(expect PARTNUM=0x00, VERSION=0x14 — 0xFF means no SPI response)");
 
   ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setMHZ(303.92);   // carrier frequency
+  ELECHOUSE_cc1101.setMHZ(303.92);   // carrier frequency (UC7070T band)
   ELECHOUSE_cc1101.setModulation(2); // 2 = OOK/ASK
   ELECHOUSE_cc1101.setDRate(3.79);   // data rate kbaud (rough estimate; adjust after analysis)
   ELECHOUSE_cc1101.setRxBW(812.50);  // wide RX bandwidth to catch signal
@@ -100,7 +100,7 @@ void setup() {
 
   pinMode(GDO0_PIN, INPUT);
 
-  Serial.println("Listening on 303.92 MHz OOK (UC7070T band)...");
+  Serial.println("Listening on 303.92 MHz OOK (UC7070T / Bedroom fan band)...");
   Serial.println("Press a button on the remote.\n");
 }
 

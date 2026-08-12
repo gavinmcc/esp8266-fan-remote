@@ -1,7 +1,14 @@
 # esp8266-fan-remote
 
-WiFi-controlled ceiling fan remote using an ESP8266 and CC1101 433 MHz transceiver.
-Replays captured OOK RF codes to control a RHINE UC7070T ceiling fan over HTTP and via Alexa.
+WiFi-controlled ceiling fan remote using an ESP8266 and CC1101 transceiver.
+Controls two ceiling fans over HTTP and Alexa by replaying captured OOK RF codes:
+
+| Room    | Fan model   | Frequency  |
+|---------|-------------|------------|
+| Bedroom | RHINE UC7070T   | 303.92 MHz |
+| Girls   | SMC-5060-RF     | 433.92 MHz |
+
+The single CC1101 module switches frequency per-command.
 
 ![Device testing](device_testing.jpg)
 
@@ -74,15 +81,32 @@ sprintf_P(out, PSTR("%02X:%02X:%02X:%02X:%02X:%02X-%02X-00:11"), mac[0],mac[1],m
 
 Navigate to `http://<ip>/` for the web UI, or call endpoints directly:
 
+**Bedroom fan (303.92 MHz):**
+
+| Endpoint   | Action              |
+|------------|---------------------|
+| `/hi`      | Fan high speed      |
+| `/med`     | Fan medium speed    |
+| `/low`     | Fan low speed       |
+| `/off`     | Fan off             |
+| `/light`   | Toggle light on/off |
+
+**Girls fan (433.92 MHz):**
+
+| Endpoint        | Action              |
+|-----------------|---------------------|
+| `/girls/hi`     | Fan high speed      |
+| `/girls/med`    | Fan medium speed    |
+| `/girls/low`    | Fan low speed       |
+| `/girls/off`    | Fan off             |
+| `/girls/light`  | Toggle light on/off |
+
+**Shared:**
+
 | Endpoint        | Action                        |
 |-----------------|-------------------------------|
-| `/`             | Web control page              |
-| `/hi`           | Fan high speed                |
-| `/med`          | Fan medium speed              |
-| `/low`          | Fan low speed                 |
-| `/off`          | Fan off                       |
-| `/light`        | Toggle light on/off           |
-| `/carrier`      | 3 s continuous RF carrier test |
+| `/`             | Web control page (both fans)  |
+| `/carrier`      | 3 s continuous RF carrier test (303 MHz) |
 | `/dumpregs`     | Read key CC1101 registers     |
 | `/status`       | Timing constants + register readback |
 
@@ -92,17 +116,22 @@ during that window if the CC1101 is transmitting.
 
 ## Alexa control
 
-The firmware exposes five Alexa devices via Espalexa (Philips Hue bridge emulation):
+The firmware exposes ten Alexa devices via Espalexa (Philips Hue bridge emulation):
 
-| Alexa device name   | Action          |
-|---------------------|-----------------|
-| Bedroom Fan High    | Fan high speed  |
-| Bedroom Fan Medium  | Fan medium speed |
-| Bedroom Fan Low     | Fan low speed   |
-| Bedroom Fan Off     | Fan off         |
-| Bedroom Light       | Toggle light    |
+| Alexa device name   | Action               |
+|---------------------|----------------------|
+| Bedroom Fan High    | Bedroom fan high     |
+| Bedroom Fan Medium  | Bedroom fan medium   |
+| Bedroom Fan Low     | Bedroom fan low      |
+| Bedroom Fan Off     | Bedroom fan off      |
+| Bedroom Light       | Bedroom light toggle |
+| Girls Fan High      | Girls fan high       |
+| Girls Fan Medium    | Girls fan medium     |
+| Girls Fan Low       | Girls fan low        |
+| Girls Fan Off       | Girls fan off        |
+| Girls Light         | Girls light toggle   |
 
-Say *"Alexa, turn on Bedroom Fan High"*, *"Alexa, turn off Bedroom Light"*, etc.
+Say *"Alexa, turn on Girls Fan High"*, *"Alexa, turn off Girls Light"*, etc.
 
 After flashing, say *"Alexa, discover devices"* or use the Alexa app to run device discovery.
 If all commands trigger the same device, recheck that the Espalexa patch above was applied.
@@ -119,13 +148,17 @@ Each command is a 13-pulse, position-encoded frame repeated multiple times with 
 
 Without this, the PA drives full carrier in both the on and off states and no modulation reaches the fan.
 
-## Target fan
+## Target fans
 
-RHINE UC7070T ceiling fan, DIP switch address `E7 80 29`.
-See [SPEC.md](SPEC.md) for full protocol details.
+See [SPEC.md](SPEC.md) for full protocol details on both fans.
 
-> **Note on DIP switch compatibility:** The OOK frame was captured from a single remote at one
-> specific DIP switch setting. It is not yet known which part of the frame encodes the address,
-> so the firmware is implicitly hard-coded to DIP switch `E7 80 29`. To adapt it for a different
-> setting, capture frames from that remote using `capture/capture.ino` and compare the header
-> pulses against those in SPEC.md to identify which bits change.
+| Room    | Model       | DIP address | Notes |
+|---------|-------------|-------------|-------|
+| Bedroom | RHINE UC7070T | `E7 80 29` | 303.92 MHz |
+| Girls   | SMC-5060-RF   | (unknown)  | 433.92 MHz |
+
+> **DIP switch encoding:** The address is not an explicit field in the frame. Changing the DIP
+> switch changes which N value the remote transmits for each command — the receiver only responds
+> to the N values matching its own DIP setting. Each fan's firmware is hard-coded to the N values
+> captured from its specific remote. To support a different DIP setting, re-capture the remote
+> with `capture/capture.ino` and compare the N values.

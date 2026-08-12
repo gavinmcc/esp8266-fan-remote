@@ -2,16 +2,13 @@
  * fan_remote.ino
  *
  * ESP8266 WiFi ceiling fan remote controller
- * Replays captured OOK/ASK codes via CC1101 (E07-M1101D-SMA)
+ * Controls two ceiling fans over HTTP and Alexa (Espalexa/Hue emulation).
  *
- * Captured from UC7070T remote at 303.92 MHz.
+ * Fan 1 — Bedroom  (UC7070T,     303.92 MHz, OOK)
+ * Fan 2 — Girls    (SMC-5060-RF, 433.92 MHz, OOK)
  *
- * Protocol: 13-pulse, position-encoded OOK frame
- *   Header (6 pulses): LS LS LL SL SS LL
- *     (pulse 0 uses shorter HIGH/LOW: SYNC0_H/SYNC0_L, measured ~420/~350µs)
- *   Data   (7 pulses): N×SL, SS, (N<5: LL+(4-N)×SL+S_terminal | N=5: L_terminal)
- *   Gap:    8000µs LOW between repetitions
- *   N encodes the command: 0=HI, 1=MED, 2=LOW, 4=OFF, 5=LIGHT
+ * Both use 13-pulse position-encoded OOK frames through the CC1101 TX FIFO.
+ * The CC1101 frequency is switched per-command; calibration runs at SFSTXON.
  *
  * Wiring:
  *   CC1101 VCC  -> 3.3V
@@ -20,13 +17,6 @@
  *   CC1101 MISO -> GPIO12 (D6)
  *   CC1101 SCK  -> GPIO14 (D5)
  *   CC1101 CSN  -> GPIO15 (D8)
- *
- * HTTP endpoints:
- *   GET /hi    /med   /low   /off   /light  — send command
- *   GET /carrier   — 3s OOK carrier test (jams physical remote if RF OK)
- *   GET /fifogate  — 9s FIFO OOK gating sanity check
- *   GET /status    — timing constants + register readback
- *   GET /dumpregs  — full CC1101 register dump
  */
 
 #include <SPI.h>
@@ -52,48 +42,66 @@ const char* PASSWORD = WIFI_PASSWORD;
 #define STROBE_STX     0x35
 #define STROBE_SIDLE   0x36
 
-// ── FIFO OOK encoding @ 40 kbaud (25µs per bit) ──────────
-// Pulse 0 of each frame is consistently shorter than other LONG_H pulses
-// (~420µs vs ~600µs). All reps start with the shorter timing.
-#define SHORT_H   10   // 10×25 = 250µs  (measured 195–296µs)
-#define LONG_H    24   // 24×25 = 600µs  (measured 522–662µs, pulses 1+)
-#define SYNC0_H   17   // 17×25 = 425µs  (pulse 0 only: measured 400–451µs)
-#define SYNC0_L   14   // 14×25 = 350µs  (pulse 0 LOW:  measured 294–359µs)
-#define SHORT_L   18   // 18×25 = 450µs  (measured 294–499µs)
-#define LONG_L    32   // 32×25 = 800µs  (measured 743–848µs)
-#define GAP      320   // 320×25 = 8000µs inter-rep gap
+// ── Bedroom fan (UC7070T, 303.92 MHz) @ 40 kbaud (25µs/bit) ──
+// Frame: Header (LS LS LL SL SS LL) + Data (N×SL SS tail) × REPS
+// Pulse 0 of each rep uses shorter sync timing.
+#define B_SHORT_H   10   // 10×25 = 250µs  (measured 195–296µs)
+#define B_LONG_H    24   // 24×25 = 600µs  (measured 522–662µs)
+#define B_SYNC0_H   17   // 17×25 = 425µs  (pulse 0 only: 400–451µs)
+#define B_SYNC0_L   14   // 14×25 = 350µs  (pulse 0 LOW:  294–359µs)
+#define B_SHORT_L   18   // 18×25 = 450µs  (measured 294–499µs)
+#define B_LONG_L    32   // 32×25 = 800µs  (measured 743–848µs)
+#define B_GAP      320   // 320×25 = 8000µs inter-rep gap
 
-// Per-command rep counts. Physical remote sends 4 reps (~60ms total).
-// More reps = more chances for fan to decode a valid frame at range.
-// LIGHT has a dimmer: short burst (~72ms physical) = toggle, long burst = dim.
-//   4 reps = ~84ms, well within "short press" territory.
-// OFF (N=4) needs many reps: 4 SL symbols before SS creates more decoding failure points at range.
-#define REPS_DEFAULT  25
-#define REPS_LIGHT     4
-#define REPS_OFF      50
+#define B_REPS_DEFAULT  25
+#define B_REPS_LIGHT     4
+#define B_REPS_OFF      50
 
-// Command N values — re-captured with dedicated RX unit, all five buttons confirmed
-#define CMD_HI     0
-#define CMD_MED    1
-#define CMD_LOW    2
-#define CMD_OFF    4
-#define CMD_LIGHT  5
+// N values re-captured with dedicated RX unit
+#define B_CMD_HI     0
+#define B_CMD_MED    1
+#define B_CMD_LOW    2
+#define B_CMD_OFF    4
+#define B_CMD_LIGHT  5
 
-static int commandReps(int N) {
-    if (N == CMD_OFF)   return REPS_OFF;
-    if (N == CMD_LIGHT) return REPS_LIGHT;
-    return REPS_DEFAULT;
+// ── Girls fan (SMC-5060-RF, 433.92 MHz) @ 40 kbaud (25µs/bit) ──
+// Frame: SL×N + SS + LL + SL×(7-N) + SS + LL + SS + L_term + GAP
+// N values decoded from raw pulse captures at 433.92 MHz.
+#define G_SHORT_H    9   //  9×25 = 225µs  (measured 188–349µs)
+#define G_LONG_H    17   // 17×25 = 425µs  (measured 405–452µs)
+#define G_SHORT_L   10   // 10×25 = 250µs  (measured 158–280µs)
+#define G_LONG_L    19   // 19×25 = 475µs  (measured 398–496µs)
+#define G_GAP      310   // 310×25 = 7750µs inter-rep gap
+
+#define G_REPS_DEFAULT  20
+#define G_REPS_LIGHT     4
+
+#define G_CMD_HI     4
+#define G_CMD_MED    3
+#define G_CMD_LOW    0
+#define G_CMD_OFF    5
+#define G_CMD_LIGHT  1
+
+static int bCommandReps(int N) {
+    if (N == B_CMD_OFF)   return B_REPS_OFF;
+    if (N == B_CMD_LIGHT) return B_REPS_LIGHT;
+    return B_REPS_DEFAULT;
+}
+
+static int gCommandReps(int N) {
+    if (N == G_CMD_LIGHT) return G_REPS_LIGHT;
+    return G_REPS_DEFAULT;
 }
 
 ESP8266WebServer server(80);
 Espalexa espalexa;
 
 // ── FIFO NRZ stream builder ───────────────────────────────
-// Buffer for 50 reps × ~105 bytes = ~5250 bytes NRZ bitstream.
-// 1-bits = OOK carrier on, 0-bits = carrier off.
+// Shared buffer for both fans. Sized for the largest burst:
+//   Bedroom OFF: 50 reps × ~105 bytes ≈ 5250 bytes
 static byte g_stream[5500];
-static int  g_streamBit;   // current write position (bits)
-static int  g_streamLen;   // final byte count after build
+static int  g_streamBit;
+static int  g_streamLen;
 
 static void streamClear() {
     memset(g_stream, 0, sizeof(g_stream));
@@ -103,7 +111,7 @@ static void streamClear() {
 static void streamAppend(int count, bool val) {
     for (int i = 0; i < count; i++) {
         int byteIdx = g_streamBit / 8;
-        int bitIdx  = 7 - (g_streamBit % 8);  // MSB first
+        int bitIdx  = 7 - (g_streamBit % 8);
         if (byteIdx < (int)sizeof(g_stream)) {
             if (val) g_stream[byteIdx] |= (1 << bitIdx);
         }
@@ -111,38 +119,58 @@ static void streamAppend(int count, bool val) {
     }
 }
 
-static void buildRep(int N) {
-    // Header pulse 0 (LS with sync timing — shorter than remaining LONG_H pulses)
-    streamAppend(SYNC0_H, true);  streamAppend(SYNC0_L, false);
-    // Header pulses 1-5 (fixed)
-    streamAppend(LONG_H,  true);  streamAppend(SHORT_L, false);  // LS
-    streamAppend(LONG_H,  true);  streamAppend(LONG_L,  false);  // LL
-    streamAppend(SHORT_H, true);  streamAppend(LONG_L,  false);  // SL
-    streamAppend(SHORT_H, true);  streamAppend(SHORT_L, false);  // SS
-    streamAppend(LONG_H,  true);  streamAppend(LONG_L,  false);  // LL
-    // Data: N × SL prefix
+// Bedroom fan rep builder (6-pulse header + 7-pulse data)
+static void buildRepB(int N) {
+    streamAppend(B_SYNC0_H, true);  streamAppend(B_SYNC0_L, false);  // LS (sync)
+    streamAppend(B_LONG_H,  true);  streamAppend(B_SHORT_L, false);  // LS
+    streamAppend(B_LONG_H,  true);  streamAppend(B_LONG_L,  false);  // LL
+    streamAppend(B_SHORT_H, true);  streamAppend(B_LONG_L,  false);  // SL
+    streamAppend(B_SHORT_H, true);  streamAppend(B_SHORT_L, false);  // SS
+    streamAppend(B_LONG_H,  true);  streamAppend(B_LONG_L,  false);  // LL
     for (int i = 0; i < N; i++) {
-        streamAppend(SHORT_H, true); streamAppend(LONG_L, false);
+        streamAppend(B_SHORT_H, true); streamAppend(B_LONG_L, false);
     }
-    // SS command marker
-    streamAppend(SHORT_H, true);  streamAppend(SHORT_L, false);
-    // Tail
+    streamAppend(B_SHORT_H, true);  streamAppend(B_SHORT_L, false);  // SS marker
     if (N < 5) {
-        streamAppend(LONG_H,  true);  streamAppend(LONG_L, false);  // LL
+        streamAppend(B_LONG_H,  true);  streamAppend(B_LONG_L, false);
         for (int i = 0; i < (4 - N); i++) {
-            streamAppend(SHORT_H, true); streamAppend(LONG_L, false);  // SL×(4-N)
+            streamAppend(B_SHORT_H, true); streamAppend(B_LONG_L, false);
         }
-        streamAppend(SHORT_H, true);  // terminal HIGH
+        streamAppend(B_SHORT_H, true);
     } else {
-        streamAppend(LONG_H, true);   // N=5: single LONG_H terminal
+        streamAppend(B_LONG_H, true);
     }
-    // Inter-rep gap (LOW)
-    streamAppend(GAP, false);
+    streamAppend(B_GAP, false);
 }
 
-static void buildStream(int N) {
+// Girls fan rep builder (13-pulse symmetric structure)
+static void buildRepG(int N) {
+    // SL×N
+    for (int i = 0; i < N; i++) {
+        streamAppend(G_SHORT_H, true);  streamAppend(G_LONG_L, false);
+    }
+    streamAppend(G_SHORT_H, true);  streamAppend(G_SHORT_L, false);  // SS
+    streamAppend(G_LONG_H,  true);  streamAppend(G_LONG_L,  false);  // LL
+    // SL×(7-N)
+    for (int i = 0; i < (7 - N); i++) {
+        streamAppend(G_SHORT_H, true);  streamAppend(G_LONG_L, false);
+    }
+    streamAppend(G_SHORT_H, true);  streamAppend(G_SHORT_L, false);  // SS
+    streamAppend(G_LONG_H,  true);  streamAppend(G_LONG_L,  false);  // LL
+    streamAppend(G_SHORT_H, true);  streamAppend(G_SHORT_L, false);  // SS
+    streamAppend(G_LONG_H,  true);                                    // L_term
+    streamAppend(G_GAP, false);
+}
+
+static void buildStreamB(int N) {
     streamClear();
-    for (int r = 0; r < commandReps(N); r++) buildRep(N);
+    for (int r = 0; r < bCommandReps(N); r++) buildRepB(N);
+    g_streamLen = (g_streamBit + 7) / 8;
+}
+
+static void buildStreamG(int N) {
+    streamClear();
+    for (int r = 0; r < gCommandReps(N); r++) buildRepG(N);
     g_streamLen = (g_streamBit + 7) / 8;
 }
 
@@ -155,54 +183,38 @@ void cc1101InitTx() {
     SPI.setClockDivider(SPI_CLOCK_DIV16);
 
     ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setMHZ(303.92);
-    ELECHOUSE_cc1101.setModulation(2);  // OOK/ASK
+    ELECHOUSE_cc1101.setMHZ(303.92);  // Bedroom fan default
+    ELECHOUSE_cc1101.setModulation(2);
     ELECHOUSE_cc1101.setPA(10);
-
-    // PKTCTRL0=0x02: FIFO mode, infinite packet length.
-    // MDMCFG2=0x30:  OOK modulation (bits 6:4 = 0b011), no sync word (bits 2:0 = 0b000).
-    // FREND0=0x11:   PA_POWER=1 → OOK=1 uses PATABLE[1], OOK=0 uses PATABLE[0].
-    //   PATABLE[0]=0x00 (OOK=0 → PA off), PATABLE[1]=0xC0 (OOK=1 → full power).
-    //   CC1101 datasheet: "PATABLE[0] should be set to 0 for OOK (PA switched off)."
-    //   Prior bug: all PATABLE entries = 0xC0, so OOK=0 still drove carrier → gating never worked.
     ELECHOUSE_cc1101.setDRate(40);
     ELECHOUSE_cc1101.SpiWriteReg(REG_PKTCTRL0, 0x02);
     ELECHOUSE_cc1101.SpiWriteReg(REG_MDMCFG2,  0x30);
     ELECHOUSE_cc1101.SpiWriteReg(REG_FREND0,   0x11);
-    // MCSM1=0x00: disable CCA (CCA_MODE=0 = always clear), TXOFF→IDLE, RXOFF→IDLE.
-    // Default 0x30 (CCA_MODE=3) silently prevents STX from FSTXON if RSSI is above threshold.
-    ELECHOUSE_cc1101.SpiWriteReg(0x17,         0x00);
-    // IOCFG2=0x56 (inverted PA_PD): GDO2 LOW in IDLE/FSTXON (ext PA off), HIGH in TX (ext PA on).
-    ELECHOUSE_cc1101.SpiWriteReg(0x00,         0x56);
+    ELECHOUSE_cc1101.SpiWriteReg(0x17,         0x00);  // MCSM1: disable CCA
+    ELECHOUSE_cc1101.SpiWriteReg(0x00,         0x56);  // IOCFG2: inverted PA_PD
 
     byte pa[8]; memset(pa, 0x00, sizeof(pa)); pa[1] = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(REG_PATABLE, pa, 8);
-
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
 }
 
 // ─────────────────────────────────────────────────────────
-// FIFO NRZ OOK TX: pre-build bitstream, stream through FIFO while PA stays on.
-// PA ramps up once on entry to TX state; FIFO data bits gate OOK on/off.
-void sendCommand(int N, const char* name) {
-    buildStream(N);
-    Serial.printf("[TX] %s N=%d FIFO mode %d reps %d bytes\n", name, N, commandReps(N), g_streamLen);
+// Core FIFO TX. Stream must already be built in g_stream/g_streamLen.
+// freq_mhz: carrier frequency to set before transmission.
+static void fifoTransmit(float freq_mhz, const char* tag) {
+    ELECHOUSE_cc1101.setMHZ(freq_mhz);
+    ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
 
-    // Pre-fill first 64 bytes into FIFO, calibrate PLL, start TX
     int firstChunk = min(g_streamLen, 64);
     ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, g_stream, firstChunk);
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
     delay(3);
     ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
 
-    // Stream remaining bytes
     int sent = firstChunk;
     while (sent < g_streamLen) {
         byte txb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
-        if (txb & 0x80) {
-            Serial.printf("[TX] FIFO underflow at %d/%d bytes!\n", sent, g_streamLen);
-            break;
-        }
+        if (txb & 0x80) { Serial.printf("[%s] FIFO underflow at %d/%d!\n", tag, sent, g_streamLen); break; }
         int avail = 64 - (int)(txb & 0x7F);
         if (avail > 0) {
             int chunk = min(avail, g_streamLen - sent);
@@ -212,27 +224,46 @@ void sendCommand(int N, const char* name) {
         yield();
     }
 
-    // Wait for FIFO to drain
     uint32_t deadline = millis() + 1000;
     while (millis() < deadline) {
         byte txb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
         if ((txb & 0x80) || (txb & 0x7F) == 0) break;
         yield();
     }
-
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
     ELECHOUSE_cc1101.SpiStrobe(0x3B);
-    Serial.printf("[TX] %s done\n", name);
 }
 
-// ── HTTP handlers ─────────────────────────────────────────
-void handleHi()    { server.send(200, "text/plain", "OK: HI");    delay(50); sendCommand(CMD_HI,    "HI"); }
-void handleMed()   { server.send(200, "text/plain", "OK: MED");   delay(50); sendCommand(CMD_MED,   "MED"); }
-void handleLow()   { server.send(200, "text/plain", "OK: LOW");   delay(50); sendCommand(CMD_LOW,   "LOW"); }
-void handleOff()   { server.send(200, "text/plain", "OK: OFF");   delay(50); sendCommand(CMD_OFF,   "OFF"); }
-void handleLight() { server.send(200, "text/plain", "OK: LIGHT"); delay(50); sendCommand(CMD_LIGHT, "LIGHT"); }
+void sendCommandB(int N, const char* name) {
+    buildStreamB(N);
+    Serial.printf("[TX-B] %s N=%d %d reps %d bytes\n", name, N, bCommandReps(N), g_streamLen);
+    fifoTransmit(303.92, "TX-B");
+    Serial.printf("[TX-B] %s done\n", name);
+}
 
-// GET /dumpregs — read back all key CC1101 registers for verification
+void sendCommandG(int N, const char* name) {
+    buildStreamG(N);
+    Serial.printf("[TX-G] %s N=%d %d reps %d bytes\n", name, N, gCommandReps(N), g_streamLen);
+    fifoTransmit(433.92, "TX-G");
+    ELECHOUSE_cc1101.setMHZ(303.92);  // restore default frequency
+    Serial.printf("[TX-G] %s done\n", name);
+}
+
+// ── HTTP handlers — Bedroom fan ───────────────────────────
+void handleHi()    { server.send(200, "text/plain", "OK: HI");    delay(50); sendCommandB(B_CMD_HI,    "HI"); }
+void handleMed()   { server.send(200, "text/plain", "OK: MED");   delay(50); sendCommandB(B_CMD_MED,   "MED"); }
+void handleLow()   { server.send(200, "text/plain", "OK: LOW");   delay(50); sendCommandB(B_CMD_LOW,   "LOW"); }
+void handleOff()   { server.send(200, "text/plain", "OK: OFF");   delay(50); sendCommandB(B_CMD_OFF,   "OFF"); }
+void handleLight() { server.send(200, "text/plain", "OK: LIGHT"); delay(50); sendCommandB(B_CMD_LIGHT, "LIGHT"); }
+
+// ── HTTP handlers — Girls fan ─────────────────────────────
+void handleGHi()    { server.send(200, "text/plain", "OK: GIRLS HI");    delay(50); sendCommandG(G_CMD_HI,    "G:HI"); }
+void handleGMed()   { server.send(200, "text/plain", "OK: GIRLS MED");   delay(50); sendCommandG(G_CMD_MED,   "G:MED"); }
+void handleGLow()   { server.send(200, "text/plain", "OK: GIRLS LOW");   delay(50); sendCommandG(G_CMD_LOW,   "G:LOW"); }
+void handleGOff()   { server.send(200, "text/plain", "OK: GIRLS OFF");   delay(50); sendCommandG(G_CMD_OFF,   "G:OFF"); }
+void handleGLight() { server.send(200, "text/plain", "OK: GIRLS LIGHT"); delay(50); sendCommandG(G_CMD_LIGHT, "G:LIGHT"); }
+
+// GET /dumpregs — read back key CC1101 registers
 void handleDumpregs() {
     struct { const char* name; uint8_t addr; } regs[] = {
         {"IOCFG2",   0x00},
@@ -263,17 +294,14 @@ void handleDumpregs() {
             uint8_t modFmt = (val >> 4) & 0x07;
             uint8_t syncMode = val & 0x07;
             snprintf(line, sizeof(line), "%-10s 0x%02X   0x%02X   MOD_FORMAT=%d(%s) SYNC_MODE=%d\n",
-                r.name, r.addr, val,
-                modFmt,
-                modFmt==3?"OOK":modFmt==0?"2-FSK":"???",
-                syncMode);
+                r.name, r.addr, val, modFmt,
+                modFmt==3?"OOK":modFmt==0?"2-FSK":"???", syncMode);
         } else if (r.addr == REG_FREND0) {
             snprintf(line, sizeof(line), "%-10s 0x%02X   0x%02X   PA_POWER=%d→PATABLE[%d]\n",
                 r.name, r.addr, val, val&0x07, val&0x07);
         } else if (r.addr == REG_PKTCTRL0) {
             snprintf(line, sizeof(line), "%-10s 0x%02X   0x%02X   PKT_FMT=%d LEN_CFG=%d CRC=%d\n",
-                r.name, r.addr, val,
-                (val>>5)&0x03, val&0x03, (val>>2)&1);
+                r.name, r.addr, val, (val>>5)&0x03, val&0x03, (val>>2)&1);
         } else {
             snprintf(line, sizeof(line), "%-10s 0x%02X   0x%02X\n", r.name, r.addr, val);
         }
@@ -281,7 +309,6 @@ void handleDumpregs() {
         Serial.print(line);
     }
 
-    // Read PATABLE
     byte pat[8];
     for (int i = 0; i < 8; i++) pat[i] = ELECHOUSE_cc1101.SpiReadReg(REG_PATABLE);
     char pline[64];
@@ -289,22 +316,27 @@ void handleDumpregs() {
         pat[0],pat[1],pat[2],pat[3],pat[4],pat[5],pat[6],pat[7]);
     out += pline;
     Serial.print(pline);
-
     server.send(200, "text/plain", out);
 }
 
-// GET /status — re-print timing constants and key register readback at any time
+// GET /status — timing constants and key register readback
 void handleStatus() {
     String out = "=== Fan Remote Status ===\n";
-    out += "Timing (bits @ 40kbaud = x25us):\n";
-    out += "  SYNC0_H=" + String(SYNC0_H) + " (" + String(SYNC0_H*25) + "us)\n";
-    out += "  SYNC0_L=" + String(SYNC0_L) + " (" + String(SYNC0_L*25) + "us)\n";
-    out += "  LONG_H="  + String(LONG_H)  + " (" + String(LONG_H*25)  + "us)\n";
-    out += "  SHORT_H=" + String(SHORT_H) + " (" + String(SHORT_H*25) + "us)\n";
-    out += "  LONG_L="  + String(LONG_L)  + " (" + String(LONG_L*25)  + "us)\n";
-    out += "  SHORT_L=" + String(SHORT_L) + " (" + String(SHORT_L*25) + "us)\n";
-    out += "  GAP="     + String(GAP)     + " (" + String(GAP*25)     + "us)\n";
-    out += "  REPS_DEFAULT=" + String(REPS_DEFAULT) + "  REPS_LIGHT=" + String(REPS_LIGHT) + "  REPS_OFF=" + String(REPS_OFF) + "\n";
+    out += "Bedroom fan (UC7070T, 303.92 MHz, 40kbaud):\n";
+    out += "  B_SYNC0_H=" + String(B_SYNC0_H) + " (" + String(B_SYNC0_H*25) + "us)\n";
+    out += "  B_LONG_H="  + String(B_LONG_H)  + " (" + String(B_LONG_H*25)  + "us)\n";
+    out += "  B_SHORT_H=" + String(B_SHORT_H) + " (" + String(B_SHORT_H*25) + "us)\n";
+    out += "  B_LONG_L="  + String(B_LONG_L)  + " (" + String(B_LONG_L*25)  + "us)\n";
+    out += "  B_SHORT_L=" + String(B_SHORT_L) + " (" + String(B_SHORT_L*25) + "us)\n";
+    out += "  B_GAP="     + String(B_GAP)     + " (" + String(B_GAP*25)     + "us)\n";
+    out += "  REPS: default=" + String(B_REPS_DEFAULT) + " off=" + String(B_REPS_OFF) + " light=" + String(B_REPS_LIGHT) + "\n";
+    out += "Girls fan (SMC-5060-RF, 433.92 MHz, 40kbaud):\n";
+    out += "  G_SHORT_H=" + String(G_SHORT_H) + " (" + String(G_SHORT_H*25) + "us)\n";
+    out += "  G_LONG_H="  + String(G_LONG_H)  + " (" + String(G_LONG_H*25)  + "us)\n";
+    out += "  G_SHORT_L=" + String(G_SHORT_L) + " (" + String(G_SHORT_L*25) + "us)\n";
+    out += "  G_LONG_L="  + String(G_LONG_L)  + " (" + String(G_LONG_L*25)  + "us)\n";
+    out += "  G_GAP="     + String(G_GAP)     + " (" + String(G_GAP*25)     + "us)\n";
+    out += "  REPS: default=" + String(G_REPS_DEFAULT) + " light=" + String(G_REPS_LIGHT) + "\n";
     byte r0 = ELECHOUSE_cc1101.SpiReadReg(REG_PKTCTRL0);
     byte r1 = ELECHOUSE_cc1101.SpiReadReg(REG_MDMCFG2);
     byte r2 = ELECHOUSE_cc1101.SpiReadReg(REG_FREND0);
@@ -319,11 +351,9 @@ void handleStatus() {
     server.send(200, "text/plain", out);
 }
 
-// GET /carrier → 3s OOK carrier test via FIFO.
-// Physical remote should FAIL during those 3s if CC1101 is transmitting.
+// GET /carrier → 3s carrier test at 303.92 MHz
 void handleCarrier() {
     Serial.println("[CARRIER] starting 3s OOK carrier test...");
-
     ELECHOUSE_cc1101.Init();
     ELECHOUSE_cc1101.setMHZ(303.92);
     ELECHOUSE_cc1101.setModulation(2);
@@ -346,7 +376,6 @@ void handleCarrier() {
     uint32_t start = millis();
     uint32_t lastLog = 0;
     byte fill[32]; memset(fill, 0xFF, sizeof(fill));
-
     while (millis() - start < 3000) {
         byte txbytes = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
         if (txbytes & 0x80) {
@@ -354,7 +383,6 @@ void handleCarrier() {
             ELECHOUSE_cc1101.SpiStrobe(0x3B);
             ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, buf, sizeof(buf));
             ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            Serial.printf("[CARRIER] underflow at %lums — restarted\n", millis() - start);
         } else if ((txbytes & 0x7F) < 32) {
             ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill, sizeof(fill));
         }
@@ -367,7 +395,6 @@ void handleCarrier() {
         }
         yield();
     }
-
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
     cc1101InitTx();
     Serial.println("[CARRIER] done");
@@ -375,9 +402,7 @@ void handleCarrier() {
         "3s OOK carrier done.\nDid the physical remote FAIL during those 3 seconds?");
 }
 
-// GET /fifogate — test whether FIFO data bytes actually gate the OOK carrier.
-// Emits 3s 0xFF (carrier ON), 3s 0x00 (should be OFF), 3s 0xFF (ON again).
-// Watch capture unit RSSI: if RSSI drops to noise floor during 0x00 phase, FIFO gating works.
+// GET /fifogate — FIFO OOK gating sanity check (9s)
 void handleFifogate() {
     server.send(200, "text/plain",
         "FIFO OOK gating test (9s).\n"
@@ -387,20 +412,17 @@ void handleFifogate() {
         "  6-9s:  0xFF carrier ON  → expect -24 dBm\n");
 
     cc1101InitTx();
-
     byte on_buf[64];  memset(on_buf,  0xFF, sizeof(on_buf));
     byte off_buf[64]; memset(off_buf, 0x00, sizeof(off_buf));
 
-    // Prime FIFO and start TX
     ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, on_buf, 64);
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SFSTXON);
     delay(3);
     ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-    Serial.printf("[FIFOGATE] started — MARC=0x%02X\n",
-        ELECHOUSE_cc1101.SpiReadStatus(0x35));
+    Serial.printf("[FIFOGATE] started — MARC=0x%02X\n", ELECHOUSE_cc1101.SpiReadStatus(0x35));
 
     uint32_t start = millis();
-    int phase = 0;  // 0=ON 1=OFF 2=ON
+    int phase = 0;
     uint32_t phase_end = start + 3000;
     Serial.println("[FIFOGATE] t=0s  phase=ON (0xFF)");
 
@@ -410,60 +432,69 @@ void handleFifogate() {
             phase++;
             phase_end += 3000;
             bool isOn = (phase % 2 == 0);
-            Serial.printf("[FIFOGATE] t=%lums  phase=%s\n", now - start, isOn ? "ON (0xFF)" : "OFF (0x00)");
+            Serial.printf("[FIFOGATE] t=%lums  phase=%s\n", now-start, isOn?"ON (0xFF)":"OFF (0x00)");
         }
         bool isOn = (phase % 2 == 0);
         byte* fill_buf = isOn ? on_buf : off_buf;
-
         byte txb = ELECHOUSE_cc1101.SpiReadStatus(0x3A);
         if (txb & 0x80) {
-            // Underflow — restart TX
             ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
             ELECHOUSE_cc1101.SpiStrobe(0x3B);
             ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill_buf, 64);
             ELECHOUSE_cc1101.SpiStrobe(STROBE_STX);
-            Serial.printf("[FIFOGATE] underflow+restart at %lums\n", millis() - start);
         } else if ((txb & 0x7F) < 48) {
             ELECHOUSE_cc1101.SpiWriteBurstReg(0x3F, fill_buf, 32);
         }
         yield();
     }
-
     ELECHOUSE_cc1101.SpiStrobe(STROBE_SIDLE);
     Serial.println("[FIFOGATE] done");
 }
 
-// ── Alexa (Espalexa) callbacks ────────────────────────────
-// brightness > 0 = "turn on"; 0 = "turn off".
-// Speed commands only fire on "turn on" to avoid accidental OFF on "turn off Fan High".
-// Light and Fan Off fire on any state change (both are effectively one-shot toggles/stops).
-void alexaFanHigh(uint8_t b)  { if (b) sendCommand(CMD_HI,    "ALEXA:HI"); }
-void alexaFanMed(uint8_t b)   { if (b) sendCommand(CMD_MED,   "ALEXA:MED"); }
-void alexaFanLow(uint8_t b)   { if (b) sendCommand(CMD_LOW,   "ALEXA:LOW"); }
-void alexaFanOff(uint8_t b)   {        sendCommand(CMD_OFF,   "ALEXA:OFF"); }
-void alexaFanLight(uint8_t b) {        sendCommand(CMD_LIGHT, "ALEXA:LIGHT"); }
+// ── Alexa callbacks — Bedroom fan ─────────────────────────
+void alexaFanHigh(uint8_t b)  { if (b) sendCommandB(B_CMD_HI,    "ALEXA:BED:HI"); }
+void alexaFanMed(uint8_t b)   { if (b) sendCommandB(B_CMD_MED,   "ALEXA:BED:MED"); }
+void alexaFanLow(uint8_t b)   { if (b) sendCommandB(B_CMD_LOW,   "ALEXA:BED:LOW"); }
+void alexaFanOff(uint8_t b)   {        sendCommandB(B_CMD_OFF,   "ALEXA:BED:OFF"); }
+void alexaFanLight(uint8_t b) {        sendCommandB(B_CMD_LIGHT, "ALEXA:BED:LIGHT"); }
+
+// ── Alexa callbacks — Girls fan ───────────────────────────
+void alexaGirlsHigh(uint8_t b)  { if (b) sendCommandG(G_CMD_HI,    "ALEXA:G:HI"); }
+void alexaGirlsMed(uint8_t b)   { if (b) sendCommandG(G_CMD_MED,   "ALEXA:G:MED"); }
+void alexaGirlsLow(uint8_t b)   { if (b) sendCommandG(G_CMD_LOW,   "ALEXA:G:LOW"); }
+void alexaGirlsOff(uint8_t b)   {        sendCommandG(G_CMD_OFF,   "ALEXA:G:OFF"); }
+void alexaGirlsLight(uint8_t b) {        sendCommandG(G_CMD_LIGHT, "ALEXA:G:LIGHT"); }
 
 void handleRoot() {
     server.send(200, "text/html",
         "<!DOCTYPE html><html><head>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Fan Remote</title><style>"
-        "body{font-family:sans-serif;max-width:360px;margin:40px auto;text-align:center;background:#111;color:#eee}"
-        "h2{margin-bottom:24px}"
-        "a{display:block;margin:10px 0;padding:16px;border-radius:8px;font-size:1.1em;"
+        "body{font-family:sans-serif;max-width:420px;margin:40px auto;text-align:center;background:#111;color:#eee}"
+        "h2{margin-bottom:8px} h3{margin:20px 0 8px;color:#aaa}"
+        "a{display:block;margin:8px 0;padding:14px;border-radius:8px;font-size:1.05em;"
         "text-decoration:none;color:#fff;background:#333}"
         "a:hover{background:#555}"
+        ".dim{background:#252525;font-size:0.85em}"
         "</style></head><body>"
         "<h2>Fan Remote</h2>"
+        "<h3>Bedroom (303 MHz)</h3>"
         "<a href='/hi'>HI</a>"
         "<a href='/med'>MED</a>"
         "<a href='/low'>LOW</a>"
         "<a href='/off'>OFF</a>"
         "<a href='/light'>LIGHT (toggle)</a>"
-        "<a href='/carrier'  style='background:#555;font-size:0.85em'>RF TEST (3s carrier)</a>"
-        "<a href='/fifogate' style='background:#555;font-size:0.85em'>OOK GATE TEST (9s)</a>"
-        "<a href='/status'   style='background:#555;font-size:0.85em'>STATUS / TIMING</a>"
-        "<a href='/dumpregs' style='background:#555;font-size:0.85em'>DUMP REGISTERS</a>"
+        "<h3>Girls (433 MHz)</h3>"
+        "<a href='/girls/hi'>HI</a>"
+        "<a href='/girls/med'>MED</a>"
+        "<a href='/girls/low'>LOW</a>"
+        "<a href='/girls/off'>OFF</a>"
+        "<a href='/girls/light'>LIGHT (toggle)</a>"
+        "<h3>Diagnostics</h3>"
+        "<a href='/carrier'  class='dim'>RF TEST (3s carrier, 303 MHz)</a>"
+        "<a href='/fifogate' class='dim'>OOK GATE TEST (9s)</a>"
+        "<a href='/status'   class='dim'>STATUS / TIMING</a>"
+        "<a href='/dumpregs' class='dim'>DUMP REGISTERS</a>"
         "</body></html>"
     );
 }
@@ -472,9 +503,7 @@ void handleRoot() {
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n\n=== ESP8266 Fan Remote ===");
-    Serial.printf("Timing: SYNC0_H=%d(%dus) SYNC0_L=%d(%dus) LONG_H=%d(%dus)\n",
-        SYNC0_H, SYNC0_H*25, SYNC0_L, SYNC0_L*25, LONG_H, LONG_H*25);
+    Serial.println("\n\n=== ESP8266 Fan Remote (dual-band) ===");
 
     cc1101InitTx();
 
@@ -489,45 +518,56 @@ void setup() {
     byte r_mdmcfg2  = ELECHOUSE_cc1101.SpiReadReg(REG_MDMCFG2);
     byte r_frend0   = ELECHOUSE_cc1101.SpiReadReg(REG_FREND0);
     byte r_patable0 = ELECHOUSE_cc1101.SpiReadReg(REG_PATABLE);
-    Serial.printf("PKTCTRL0=0x%02X (expect 0x02)  MDMCFG2=0x%02X (expect 0x30)\n",
-                  r_pktctrl0, r_mdmcfg2);
-    Serial.printf("FREND0  =0x%02X (expect 0x11)  PATABLE[0]=0x%02X (expect 0x00)\n",
-                  r_frend0, r_patable0);
+    Serial.printf("PKTCTRL0=0x%02X (want 0x02)  MDMCFG2=0x%02X (want 0x30)\n", r_pktctrl0, r_mdmcfg2);
+    Serial.printf("FREND0  =0x%02X (want 0x11)  PATABLE[0]=0x%02X (want 0x00)\n", r_frend0, r_patable0);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(SSID, PASSWORD);
     Serial.print("Connecting to WiFi");
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print('.');
-    }
+    while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print('.'); }
     Serial.printf("\nIP: http://%s\n", WiFi.localIP().toString().c_str());
 
-    server.on("/",         handleRoot);
-    server.on("/hi",       handleHi);
-    server.on("/med",      handleMed);
-    server.on("/low",      handleLow);
-    server.on("/off",      handleOff);
-    server.on("/light",    handleLight);
-    server.on("/carrier",  handleCarrier);
-    server.on("/fifogate", handleFifogate);
-    server.on("/status",   handleStatus);
-    server.on("/dumpregs", handleDumpregs);
+    // Bedroom fan routes
+    server.on("/",          handleRoot);
+    server.on("/hi",        handleHi);
+    server.on("/med",       handleMed);
+    server.on("/low",       handleLow);
+    server.on("/off",       handleOff);
+    server.on("/light",     handleLight);
+    // Girls fan routes
+    server.on("/girls/hi",    handleGHi);
+    server.on("/girls/med",   handleGMed);
+    server.on("/girls/low",   handleGLow);
+    server.on("/girls/off",   handleGOff);
+    server.on("/girls/light", handleGLight);
+    // Diagnostics
+    server.on("/carrier",   handleCarrier);
+    server.on("/fifogate",  handleFifogate);
+    server.on("/status",    handleStatus);
+    server.on("/dumpregs",  handleDumpregs);
 
-    // Alexa discovery: forward unrecognised URIs to espalexa before returning 404.
     server.onNotFound([]() {
         if (!espalexa.handleAlexaApiCall(server.uri(), server.arg(0)))
             server.send(404, "text/plain", "Not found");
     });
+
+    // Bedroom fan Alexa devices
     espalexa.addDevice("Bedroom Fan High",   alexaFanHigh);
     espalexa.addDevice("Bedroom Fan Medium", alexaFanMed);
     espalexa.addDevice("Bedroom Fan Low",    alexaFanLow);
     espalexa.addDevice("Bedroom Fan Off",    alexaFanOff);
     espalexa.addDevice("Bedroom Light",      alexaFanLight);
-    espalexa.begin(&server);  // calls server.begin() internally
-    Serial.println("Ready. Alexa devices registered.");
+    // Girls fan Alexa devices
+    espalexa.addDevice("Girls Fan High",     alexaGirlsHigh);
+    espalexa.addDevice("Girls Fan Medium",   alexaGirlsMed);
+    espalexa.addDevice("Girls Fan Low",      alexaGirlsLow);
+    espalexa.addDevice("Girls Fan Off",      alexaGirlsOff);
+    espalexa.addDevice("Girls Light",        alexaGirlsLight);
+
+    espalexa.begin(&server);
+    Serial.println("Ready. 10 Alexa devices registered (Bedroom + Girls).");
 }
 
 void loop() {
-    espalexa.loop();  // handles server.handleClient() + UPnP discovery internally
+    espalexa.loop();
 }

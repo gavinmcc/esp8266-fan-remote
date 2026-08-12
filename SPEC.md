@@ -1,4 +1,11 @@
-# Protocol Specification — RHINE UC7070T Fan Remote
+# Protocol Specifications
+
+Two fans are supported. Both use 13-pulse position-encoded OOK frames through the same CC1101.
+The CC1101 frequency is switched per-command; PLL re-calibrates on SFSTXON.
+
+---
+
+# Fan 1 — Bedroom: RHINE UC7070T
 
 ## RF Parameters
 
@@ -184,3 +191,82 @@ Alexa voice control works via Espalexa (see README for setup and required librar
 | FREND0=0x11 + PATABLE[0]=0x00, [1]=0xC0 | Correct — OOK properly gates carrier on/off |
 | MDMCFG2=0x20 (reserved modulation) | Emits carrier but no OOK gating — fixed with 0x30 |
 | First CC1101 unit (E07-M1010) | Suspected hardware defect — replaced with E07-M1101D |
+
+---
+
+# Fan 2 — Girls: SMC-5060-RF
+
+## RF Parameters
+
+| Parameter   | Value       |
+|-------------|-------------|
+| Frequency   | 433.92 MHz  |
+| Modulation  | OOK / ASK   |
+| Encoding    | Position-encoded symbol pairs (same scheme as Fan 1, different N values) |
+
+## Symbol Alphabet
+
+| Name    | Phase | Width (µs) | Measured range | Bits at 40 kbaud |
+|---------|-------|------------|----------------|-----------------|
+| SHORT_H | HIGH  | ~225       | 188–349 µs     | 9               |
+| LONG_H  | HIGH  | ~425       | 405–452 µs     | 17              |
+| SHORT_L | LOW   | ~250       | 158–280 µs     | 10              |
+| LONG_L  | LOW   | ~475       | 398–496 µs     | 19              |
+| GAP     | LOW   | ~7750      | inter-rep gap  | 310             |
+
+## Packet Structure
+
+Each button press transmits **20 repetitions** (4 for LIGHT) of the following 13-pulse frame,
+each followed by a ~7750 µs gap:
+
+```
+SL×N + SS + LL + SL×(7-N) + SS + LL + SS + L_term + GAP   × REPS
+```
+
+Total SLs per frame always equals 7. Total pulses always equals 13.
+
+### Command Map
+
+| Button | N | Frame (before first gap)                    |
+|--------|---|---------------------------------------------|
+| HI     | 4 | `SL SL SL SL SS LL SL SL SL SS LL SS L`    |
+| MED    | 3 | `SL SL SL SS LL SL SL SL SL SS LL SS L`    |
+| LOW    | 0 | `SS LL SL SL SL SL SL SL SL SS LL SS L`    |
+| OFF    | 5 | `SL SL SL SL SL SS LL SL SL SS LL SS L`    |
+| LIGHT  | 1 | `SL SS LL SL SL SL SL SL SL SS LL SS L`    |
+
+N=2 and N=6 are not used.
+
+## Address Encoding
+
+The DIP switch address is implicitly encoded in the N-value mapping: changing the
+DIP switch changes which N value the remote sends for each command. The receiver
+responds only to the N values that match its programmed DIP setting. No explicit
+address field appears in the 13-pulse frame.
+
+Comparing Fan 1 (UC7070T) and Fan 2 (SMC-5060-RF):
+
+| Command | Fan 1 N | Fan 2 N |
+|---------|---------|---------|
+| HI      | 0       | 4       |
+| MED     | 1       | 3       |
+| LOW     | 2       | 0       |
+| OFF     | 4       | 5       |
+| LIGHT   | 5       | 1       |
+
+## Capture Methodology
+
+Captured using `capture/capture.ino` temporarily reflashed to 433.92 MHz.
+Each button pressed individually; N decoded from multiple clean 13-pulse frames.
+
+| Button | N decoded | Capture frames used |
+|--------|-----------|---------------------|
+| HI     | 4         | #26–28 (prev session) |
+| MED    | 3         | #36–40              |
+| LOW    | 0         | #41–45              |
+| OFF    | 5         | #47–51              |
+| LIGHT  | 1         | #52–56, #57         |
+
+## Current Status
+
+**Firmware added** 2026-08-11. Awaiting first hardware test.
