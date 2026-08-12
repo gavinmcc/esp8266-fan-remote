@@ -219,25 +219,24 @@ RX serial open: /dev/ttyUSB0
 
 ── Command tests ───────────────────────────────────────
   [RX] tuned to 303.92 MHz
-  PASS  BED:HI      HTTP=ok  RF=captured 18 frame(s)
-  PASS  BED:MED     HTTP=ok  RF=captured 16 frame(s)
-  PASS  BED:LOW     HTTP=ok  RF=captured 21 frame(s)
-  PASS  BED:OFF     HTTP=ok  RF=captured 10 frame(s)
-  PASS  BED:LIGHT   HTTP=ok  RF=captured 3 frame(s)
+  PASS  BED:HI      HTTP=ok  RF=captured 16 frame(s)
+  PASS  BED:MED     HTTP=ok  RF=captured 20 frame(s)
+  PASS  BED:LOW     HTTP=ok  RF=captured 17 frame(s)
+  PASS  BED:OFF     HTTP=ok  RF=captured 1 frame(s)
+  PASS  BED:LIGHT   HTTP=ok  RF=captured 12 frame(s)
   [RX] tuned to 433.92 MHz
-  PASS  GIR:HI      HTTP=ok  RF=captured 2 frame(s)
-  PASS  GIR:MED     HTTP=ok  RF=captured 1 frame(s)
-  FAIL  GIR:LOW     HTTP=ok  RF=peak RSSI -93 dBm (no signal)
-  PASS  GIR:OFF     HTTP=ok  RF=captured 2 frame(s)
+  PASS  GIR:HI      HTTP=ok  RF=captured 1 frame(s)
+  PASS  GIR:MED     HTTP=ok  RF=captured 2 frame(s)
+  PASS  GIR:LOW     HTTP=ok  RF=captured 1 frame(s)
+  PASS  GIR:OFF     HTTP=ok  RF=captured 1 frame(s)
   PASS  GIR:LIGHT   HTTP=ok  RF=captured 1 frame(s)
 
 ───────────────────────────────────────────────────────
-  10/11 passed ✗
+  11/11 passed ✓
 ```
 
-The GIR:LOW RF miss is a hardware limitation: the capture unit's E07-M1010 module
-is rated 300–348 MHz, so 433 MHz reception is marginal. Touching the two antennas
-together eliminates this — with contact, all 10 commands pass consistently.
+The capture unit's E07-M1010 module is rated 300–348 MHz so 433 MHz reception is
+marginal — touch the two antennas together when testing Girls fan commands.
 
 ### Tuning the capture unit frequency manually
 
