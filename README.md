@@ -136,6 +136,90 @@ Say *"Alexa, turn on Girls Fan High"*, *"Alexa, turn off Girls Light"*, etc.
 After flashing, say *"Alexa, discover devices"* or use the Alexa app to run device discovery.
 If all commands trigger the same device, recheck that the Espalexa patch above was applied.
 
+## End-to-end testing
+
+`test_e2e.py` fires every HTTP command at the TX unit and verifies the response, while
+optionally using a second ESP8266+CC1101 running `capture/capture.ino` to confirm RF
+is actually being transmitted.
+
+### Hardware needed
+
+| Unit | Sketch | Module |
+|------|--------|--------|
+| TX   | `fan_remote/` | E07-M1101D (wideband) |
+| RX (optional) | `capture/` | any CC1101; wideband recommended for 433 MHz |
+
+Connect both to the host machine via USB.
+
+### Build and flash
+
+```bash
+# TX unit
+./build.sh
+
+# Capture unit — identify its port first, then:
+~/bin/arduino-cli compile --fqbn esp8266:esp8266:generic capture
+~/bin/arduino-cli upload  --fqbn esp8266:esp8266:generic --port /dev/ttyUSB0 capture
+```
+
+Or flash both at once (adjust ports as needed):
+
+```bash
+~/bin/arduino-cli upload --fqbn esp8266:esp8266:generic --port /dev/ttyUSB1 fan_remote &
+~/bin/arduino-cli upload --fqbn esp8266:esp8266:generic --port /dev/ttyUSB0 capture   &
+wait
+```
+
+To identify which port is which, check Serial output:
+```bash
+# The capture unit prints [RSSI] lines; the TX unit does not
+python3 -c "
+import serial, time
+for p in ['/dev/ttyUSB0', '/dev/ttyUSB1']:
+    s = serial.Serial(p, 115200, timeout=0.5)
+    d = s.read(256).decode(errors='replace'); s.close()
+    print(p, 'CAPTURE' if '[RSSI]' in d else 'TX/other')
+"
+```
+
+### Run the test
+
+```bash
+pip install pyserial   # if not already installed
+
+python3 test_e2e.py --tx-ip 192.168.4.135
+```
+
+The RX port is auto-detected. To specify it explicitly:
+
+```bash
+python3 test_e2e.py --tx-ip 192.168.4.135 --rx-port /dev/ttyUSB0
+```
+
+The script:
+1. Checks key CC1101 registers via `/status`
+2. Fires all 10 commands (5 Bedroom + 5 Girls) and checks HTTP responses
+3. Sends `FREQ 303.92` / `FREQ 433.92` over serial to retune the capture unit
+   between device batches, then checks for an RSSI spike above −70 dBm
+
+Without the capture unit connected, steps 1 and 2 still run; step 3 is skipped.
+
+### Tuning the capture unit frequency manually
+
+The capture unit accepts serial commands at 115200 baud:
+
+```
+FREQ 433.92    ← retune to Girls fan band
+FREQ 303.92    ← retune to Bedroom fan band
+```
+
+Send via any serial terminal, or with Python:
+```python
+import serial
+s = serial.Serial('/dev/ttyUSB0', 115200)
+s.write(b'FREQ 433.92\n')
+```
+
 ## How it works
 
 The firmware replays captured OOK frames through the CC1101's TX FIFO at 303.92 MHz.

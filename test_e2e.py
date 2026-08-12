@@ -7,6 +7,9 @@ Checks:
   2. Each fan command returns HTTP 200 with expected body
   3. RX unit sees RF signal during each transmission (RSSI spike or pulse capture)
 
+The RX unit serial port is held open for the full test run. Before each device's
+command batch the script sends "FREQ <mhz>" to retune the capture unit.
+
 Usage:
   python3 test_e2e.py [--tx-ip IP] [--rx-port PORT]
 
@@ -17,6 +20,8 @@ Defaults:
 
 import argparse
 import glob
+import json
+import os
 import re
 import sys
 import threading
@@ -26,22 +31,21 @@ import urllib.error
 
 
 RSSI_SIGNAL_THRESHOLD = -70   # dBm — anything above this during TX counts as "signal seen"
-RX_LISTEN_SECONDS     = 2.5   # how long to listen on RX after firing each command (OFF takes ~1.05s)
-
-COMMANDS = [
-    ("BED:HI",    "/bedroom/hi",    "OK: BEDROOM HI"),
-    ("BED:MED",   "/bedroom/med",   "OK: BEDROOM MED"),
-    ("BED:LOW",   "/bedroom/low",   "OK: BEDROOM LOW"),
-    ("BED:OFF",   "/bedroom/off",   "OK: BEDROOM OFF"),
-    ("BED:LIGHT", "/bedroom/light", "OK: BEDROOM LIGHT"),
-]
+RX_LISTEN_SECONDS     = 2.5   # how long to listen after firing each command
 
 EXPECTED_REGISTERS = {
-    "PKTCTRL0": "0x02",
-    "MDMCFG2":  "0x30",
-    "FREND0":   "0x11",
+    "PKTCTRL0":   "0x02",
+    "MDMCFG2":    "0x30",
+    "FREND0":     "0x11",
     "PATABLE[0]": "0x00",
 }
+
+
+def load_devices():
+    """Return devices list from devices.json."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "devices.json")) as f:
+        return json.load(f)
 
 
 def http_get(url, timeout=5):
@@ -58,13 +62,12 @@ def auto_detect_rx_port():
         return None
     if len(ports) == 1:
         return ports[0]
-    # Try each port briefly; capture.ino prints [RSSI] lines, fan_remote.ino does not
     for port in ports:
         try:
             import serial
-            s = serial.Serial(port, 115200, timeout=0.3)
+            s    = serial.Serial(port, 115200, timeout=0.3)
             data = b""
-            end = time.time() + 1.5
+            end  = time.time() + 1.5
             while time.time() < end:
                 data += s.read(256)
             s.close()
@@ -75,32 +78,34 @@ def auto_detect_rx_port():
     return ports[0]
 
 
-def listen_rx(port, results, duration):
-    """Read RX serial for `duration` seconds, record max RSSI and any captures."""
-    try:
-        import serial
-        s = serial.Serial(port, 115200, timeout=0.1)
-        max_rssi = -999
-        captures = []
-        end = time.time() + duration
-        while time.time() < end:
-            line = s.readline().decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            m = re.search(r'\[RSSI\]\s+(-?\d+)', line)
-            if m:
-                rssi = int(m.group(1))
-                if rssi > max_rssi:
-                    max_rssi = rssi
-            elif line.startswith("@") and "#" in line:
-                captures.append(line)
-        s.close()
-        results["max_rssi"] = max_rssi
-        results["captures"] = captures
-    except ImportError:
-        results["error"] = "pyserial not installed — run: pip install pyserial"
-    except Exception as e:
-        results["error"] = str(e)
+def rx_set_freq(ser, freq_mhz):
+    """Send a FREQ command to the capture unit and wait for it to retune."""
+    ser.write(f"FREQ {freq_mhz:.2f}\n".encode())
+    time.sleep(0.3)  # CC1101 SetRx takes ~a few ms; 300ms is generous
+
+
+def listen_rx(ser, results, duration):
+    """Read from the already-open serial for duration seconds."""
+    max_rssi = -999
+    captures = []
+    end      = time.time() + duration
+    while time.time() < end:
+        try:
+            line = ser.readline().decode("utf-8", errors="replace").strip()
+        except Exception as e:
+            results["error"] = str(e)
+            return
+        if not line:
+            continue
+        m = re.search(r'\[RSSI\]\s+(-?\d+)', line)
+        if m:
+            rssi = int(m.group(1))
+            if rssi > max_rssi:
+                max_rssi = rssi
+        elif line.startswith("@") and "#" in line:
+            captures.append(line)
+    results["max_rssi"] = max_rssi
+    results["captures"] = captures
 
 
 def check_status(tx_base):
@@ -112,13 +117,11 @@ def check_status(tx_base):
 
     all_ok = True
     for reg, want in EXPECTED_REGISTERS.items():
-        pattern = rf"{re.escape(reg)}\s*=\s*({re.escape(want)})"
-        if re.search(pattern, body):
+        if re.search(rf"{re.escape(reg)}\s*=\s*{re.escape(want)}", body):
             print(f"  PASS  {reg} = {want}")
         else:
-            # Extract what we actually got
             got_m = re.search(rf"{re.escape(reg)}\s*=\s*(0x[0-9A-Fa-f]+)", body)
-            got = got_m.group(1) if got_m else "?"
+            got   = got_m.group(1) if got_m else "?"
             print(f"  FAIL  {reg}: want {want}, got {got}")
             all_ok = False
     return all_ok
@@ -128,60 +131,92 @@ def run_tests(tx_base, rx_port):
     print(f"\nTX: {tx_base}")
     print(f"RX: {rx_port or 'not available — skipping RF checks'}")
 
-    passed = 0
-    failed = 0
+    devices  = load_devices()
+    passed   = 0
+    failed   = 0
 
     if not check_status(tx_base):
         failed += 1
     else:
         passed += 1
 
-    print("\n── Command tests ───────────────────────────────────────")
-    for name, path, expected_body in COMMANDS:
-        rx_results = {}
+    # Open RX serial once for the whole run
+    rx_ser = None
+    if rx_port:
+        try:
+            import serial
+            rx_ser = serial.Serial(rx_port, 115200, timeout=0.1)
+            print(f"RX serial open: {rx_port}")
+        except ImportError:
+            print("pyserial not installed — run: pip install pyserial")
+        except Exception as e:
+            print(f"RX serial error: {e}")
 
-        # Start RX listener before firing so we catch the leading edge of TX
-        rx_thread = None
-        if rx_port:
-            rx_thread = threading.Thread(
-                target=listen_rx, args=(rx_port, rx_results, RX_LISTEN_SECONDS), daemon=True
-            )
-            rx_thread.start()
-            time.sleep(0.1)  # small head start so listener is ready
+    try:
+        cmd_keys   = ("hi", "med", "low", "off", "light")
+        current_freq = None
 
-        url = f"{tx_base}{path}"
-        status, body = http_get(url, timeout=10)
+        print("\n── Command tests ───────────────────────────────────────")
+        for dev in devices:
+            dev_name  = dev["name"].upper()
+            dev_path  = dev["path"]
+            freq_mhz  = dev["freq_mhz"]
+            short     = dev_name[:3]
 
-        if rx_thread:
-            rx_thread.join()
+            # Retune capture unit when frequency changes
+            if rx_ser and freq_mhz != current_freq:
+                rx_set_freq(rx_ser, freq_mhz)
+                current_freq = freq_mhz
+                print(f"  [RX] tuned to {freq_mhz} MHz")
 
-        # HTTP check
-        http_ok = status == 200 and expected_body in body
-        http_label = f"HTTP {status}" if status else "HTTP FAIL"
+            for key in cmd_keys:
+                label    = f"{short}:{key.upper()}"
+                endpoint = f"/{dev_path}/{key}"
+                expected = f"OK: {dev_name} {key.upper()}"
 
-        # RF check
-        rf_ok = None
-        rf_label = ""
-        if "error" in rx_results:
-            rf_label = f"RX error: {rx_results['error']}"
-        elif rx_results:
-            max_rssi = rx_results.get("max_rssi", -999)
-            captures = rx_results.get("captures", [])
-            rf_ok = max_rssi > RSSI_SIGNAL_THRESHOLD or len(captures) > 0
-            if captures:
-                rf_label = f"captured {len(captures)} frame(s)"
-            else:
-                rf_label = f"peak RSSI {max_rssi} dBm ({'signal seen' if rf_ok else 'no signal'})"
+                rx_results = {}
+                rx_thread  = None
+                if rx_ser:
+                    rx_thread = threading.Thread(
+                        target=listen_rx,
+                        args=(rx_ser, rx_results, RX_LISTEN_SECONDS),
+                        daemon=True,
+                    )
+                    rx_thread.start()
+                    time.sleep(0.1)  # head start so listener is ready
 
-        overall = http_ok and (rf_ok is not False)
-        status_str = "PASS" if overall else "FAIL"
-        if overall:
-            passed += 1
-        else:
-            failed += 1
+                status, body = http_get(f"{tx_base}{endpoint}", timeout=10)
 
-        http_result = "ok" if http_ok else f"FAIL (status={status}, body={body!r})"
-        print(f"  {status_str}  {name:6s}  HTTP={http_result}  RF={rf_label}")
+                if rx_thread:
+                    rx_thread.join()
+
+                http_ok = status == 200 and expected in body
+
+                rf_ok    = None
+                rf_label = ""
+                if "error" in rx_results:
+                    rf_label = f"RX error: {rx_results['error']}"
+                elif rx_results:
+                    max_rssi = rx_results.get("max_rssi", -999)
+                    captures = rx_results.get("captures", [])
+                    rf_ok    = max_rssi > RSSI_SIGNAL_THRESHOLD or len(captures) > 0
+                    if captures:
+                        rf_label = f"captured {len(captures)} frame(s)"
+                    else:
+                        rf_label = f"peak RSSI {max_rssi} dBm ({'signal seen' if rf_ok else 'no signal'})"
+
+                overall = http_ok and (rf_ok is not False)
+                if overall:
+                    passed += 1
+                else:
+                    failed += 1
+
+                http_result = "ok" if http_ok else f"FAIL (status={status}, body={body!r})"
+                print(f"  {'PASS' if overall else 'FAIL'}  {label:10s}  HTTP={http_result}  RF={rf_label}")
+
+    finally:
+        if rx_ser:
+            rx_ser.close()
 
     print(f"\n{'─' * 55}")
     total = passed + failed
@@ -195,10 +230,7 @@ def main():
     parser.add_argument("--rx-port", default=None,            help="RX unit serial port (auto-detected if omitted)")
     args = parser.parse_args()
 
-    tx_base = f"http://{args.tx_ip}"
-    rx_port = args.rx_port or auto_detect_rx_port()
-
-    ok = run_tests(tx_base, rx_port)
+    ok = run_tests(f"http://{args.tx_ip}", args.rx_port or auto_detect_rx_port())
     sys.exit(0 if ok else 1)
 
 

@@ -1,0 +1,60 @@
+[
+  {
+    "name": "Bedroom",
+    "path": "bedroom",
+    "protocol": "UC7070T",
+    "freq_mhz": 303.92,
+    "timing": {
+      "short_h": 10,
+      "long_h":  24,
+      "sync0_h": 17,
+      "sync0_l": 14,
+      "short_l": 18,
+      "long_l":  32,
+      "gap":    320
+    },
+    "commands": {
+      "hi":    { "N": 0, "reps": 25, "fire_always": false },
+      "med":   { "N": 1, "reps": 25, "fire_always": false },
+      "low":   { "N": 2, "reps": 25, "fire_always": false },
+      "off":   { "N": 4, "reps": 50, "fire_always": true  },
+      "light": { "N": 5, "reps":  4, "fire_always": true  }
+    },
+    "alexa": {
+      "hi":    "Bedroom Fan High",
+      "med":   "Bedroom Fan Medium",
+      "low":   "Bedroom Fan Low",
+      "off":   "Bedroom Fan Off",
+      "light": "Bedroom Light"
+    }
+  },
+  {
+    "name": "Girls",
+    "path": "girls",
+    "protocol": "SMC5060RF",
+    "freq_mhz": 433.92,
+    "timing": {
+      "short_h":  9,
+      "long_h":  17,
+      "sync0_h":  0,
+      "sync0_l":  0,
+      "short_l": 10,
+      "long_l":  19,
+      "gap":    310
+    },
+    "commands": {
+      "hi":    { "N": 4, "reps": 20, "fire_always": false },
+      "med":   { "N": 3, "reps": 20, "fire_always": false },
+      "low":   { "N": 0, "reps": 20, "fire_always": false },
+      "off":   { "N": 5, "reps": 20, "fire_always": true  },
+      "light": { "N": 1, "reps":  4, "fire_always": true  }
+    },
+    "alexa": {
+      "hi":    "Girls Fan High",
+      "med":   "Girls Fan Medium",
+      "low":   "Girls Fan Low",
+      "off":   "Girls Fan Off",
+      "light": "Girls Light"
+    }
+  }
+]

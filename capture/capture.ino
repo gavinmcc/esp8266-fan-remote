@@ -33,6 +33,8 @@
 #define PIN_MOSI     13    // D7
 #define PIN_CSN      15    // D8
 
+float g_freq = 303.92;  // current RX frequency; change via "FREQ 433.92" serial command
+
 // Pulse capture limits
 #define MAX_PULSES   300
 #define MIN_PULSE_US 80    // below this = noise, skip
@@ -75,7 +77,7 @@ void setupCC1101() {
   Serial.println("(expect PARTNUM=0x00, VERSION=0x14 — 0xFF means no SPI response)");
 
   ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setMHZ(303.92);   // carrier frequency (UC7070T band)
+  ELECHOUSE_cc1101.setMHZ(g_freq);
   ELECHOUSE_cc1101.setModulation(2); // 2 = OOK/ASK
   ELECHOUSE_cc1101.setDRate(3.79);   // data rate kbaud (rough estimate; adjust after analysis)
   ELECHOUSE_cc1101.setRxBW(812.50);  // wide RX bandwidth to catch signal
@@ -100,8 +102,9 @@ void setup() {
 
   pinMode(GDO0_PIN, INPUT);
 
-  Serial.println("Listening on 303.92 MHz OOK (UC7070T / Bedroom fan band)...");
-  Serial.println("Press a button on the remote.\n");
+  Serial.printf("Listening on %.2f MHz OOK...\n", g_freq);
+  Serial.println("Press a button on the remote.");
+  Serial.println("Send \"FREQ 433.92\" (or any freq) over serial to retune.\n");
 }
 
 bool capturePulses() {
@@ -178,6 +181,18 @@ static uint32_t lastRssi = 0;
 static uint32_t lastGdo  = 0;
 
 void loop() {
+  // Handle serial commands: "FREQ 433.92" switches the RX frequency
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.startsWith("FREQ ")) {
+      g_freq = cmd.substring(5).toFloat();
+      ELECHOUSE_cc1101.setMHZ(g_freq);
+      ELECHOUSE_cc1101.SetRx();
+      Serial.printf("[CMD] tuned to %.2f MHz\n", g_freq);
+    }
+  }
+
   uint32_t now = millis();
 
   // Print RSSI + GDO0 state every 500ms so we can see if RX is getting any signal
