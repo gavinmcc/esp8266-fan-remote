@@ -63,33 +63,55 @@ def parse_pulses(line):
 
 def decode_N(pulses, protocol, timing):
     """
-    Decode the N value from a captured frame.
+    Decode the N value from a list of (hi_us, lo_us) pulse pairs.
+    Returns N (int) or None if the frame doesn't parse cleanly.
 
-    UC7070T:  skip 6-pulse header, count SL before first SS in data section.
-    SMC5060RF: count SL before first SS from pulse 0.
+    Thresholds come from hi_thresh_us / lo_thresh_us in the timing dict
+    (midpoints of the measured gap between SHORT and LONG for each phase).
 
-    Returns N (int) or None if the frame doesn't parse.
+    UC7070T: scans for the header's 'SL SS LL' tail to anchor the data
+    section, making the decode robust to frames captured mid-rep.
+
+    SMC5060RF: counts SL before the first SS from pulse 0.
     """
-    hi_thresh = (timing['short_h'] + timing['long_h']) / 2 * 25  # midpoint in µs
-    lo_thresh = (timing['short_l'] + timing['long_l']) / 2 * 25
+    hi_thresh = timing['hi_thresh_us']
+    lo_thresh = timing['lo_thresh_us']
 
     def sym(hi, lo):
         return ('S' if hi < hi_thresh else 'L') + ('S' if lo < lo_thresh else 'L')
 
-    start = 6 if protocol == 'UC7070T' else 0
-    if len(pulses) <= start:
-        return None
+    syms = [sym(hi, lo) for hi, lo in pulses]
 
-    N = 0
-    for hi, lo in pulses[start:]:
-        s = sym(hi, lo)
-        if s == 'SL':
-            N += 1
-        elif s == 'SS':
-            return N
-        else:
-            return None  # unexpected symbol before SS
-    return None
+    if protocol == 'UC7070T':
+        # Find 'SL SS LL' — the end of the 6-pulse header — then count SL
+        # before the next SS in the data section that follows.
+        for i in range(len(syms) - 2):
+            if syms[i] == 'SL' and syms[i+1] == 'SS' and syms[i+2] == 'LL':
+                N = 0
+                for s in syms[i+3:]:
+                    if s == 'SL':   N += 1
+                    elif s == 'SS': return N
+                    else:           return None
+                return None
+        return None  # header anchor not found
+
+    else:  # SMC5060RF: SL*N + SS + LL + SL*(7-N) + SS + LL + SS + LL(L_term+GAP)
+        N = 0
+        first_ss = None
+        for i, s in enumerate(syms):
+            if s == 'SL':   N += 1
+            elif s == 'SS': first_ss = i; break
+            else:           return None
+        if first_ss is None:
+            return None
+        # Validate the remainder so partial/misaligned frames are rejected
+        rest     = syms[first_ss+1:]
+        expected = ['LL'] + ['SL'] * (7 - N) + ['SS', 'LL', 'SS', 'LL']
+        if len(rest) < len(expected):
+            return None
+        if rest[:len(expected)] != expected:
+            return None
+        return N
 
 
 def auto_detect_rx_port():

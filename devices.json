@@ -11,7 +11,9 @@
       "sync0_l": 14,
       "short_l": 18,
       "long_l":  32,
-      "gap":    320
+      "gap":    320,
+      "hi_thresh_us": 350,
+      "lo_thresh_us": 620
     },
     "commands": {
       "hi":    { "N": 0, "reps": 25, "fire_always": false },
@@ -40,7 +42,9 @@
       "sync0_l":  0,
       "short_l": 10,
       "long_l":  19,
-      "gap":    310
+      "gap":    310,
+      "hi_thresh_us": 380,
+      "lo_thresh_us": 340
     },
     "commands": {
       "hi":    { "N": 4, "reps": 20, "fire_always": false },
