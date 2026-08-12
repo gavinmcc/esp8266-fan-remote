@@ -95,17 +95,48 @@ def decode_N(pulses, protocol, timing):
                 return None
         return None  # header anchor not found
 
-    else:  # SMC5060RF: SL*N + SS + LL + SL*(7-N) + SS + LL + SS + LL(L_term+GAP)
+    else:  # SMC5060RF
+        # Out-of-band 433 MHz reception through a 300-348 MHz receiver causes two effects:
+        # 1. Inter-rep gap (~7750µs) compressed to ~3000µs, below the capture unit's 8000µs
+        #    threshold, so the last pulse of the previous rep is captured with the gap as its
+        #    lo value (> 1000µs). Skip these leading gap-artifact pulses.
+        # 2. AGC settling stretches the hi of the first real pulse (e.g. a 225µs SHORT_H
+        #    measures as 466µs, classifying as LONG_H). Use lo-only for the first real pulse
+        #    since lo is unaffected by AGC settling.
+        # Subsequent pulses are clean; treat LL same as SL for robustness.
+
+        # Step 1: skip leading pulses with compressed inter-rep gap as lo
+        start = 0
+        while start < len(pulses) and pulses[start][1] > 1000:
+            start += 1
+        if start >= len(pulses):
+            return None
+
+        # Step 2: count SLs before first SS, using lo-only for the first real pulse
         N = 0
         first_ss = None
-        for i, s in enumerate(syms):
-            if s == 'SL':   N += 1
-            elif s == 'SS': first_ss = i; break
-            else:           return None
+
+        if pulses[start][1] < lo_thresh:
+            first_ss = start          # SHORT lo → separator (SS or AGC-distorted LS)
+        else:
+            N += 1                    # LONG lo → data pulse (SL or AGC-distorted LL)
+
         if first_ss is None:
+            for i in range(start + 1, len(pulses)):
+                s = syms[i]
+                if s in ('SL', 'LL'):     # treat LL same as SL (occasional AGC hi-stretch)
+                    N += 1
+                elif s in ('SS', 'LS'):   # LS = AGC-distorted SS (long hi, short lo)
+                    first_ss = i
+                    break
+                else:
+                    return None
+
+        if first_ss is None or N > 7:
             return None
-        # Validate the remainder so partial/misaligned frames are rejected
-        rest     = syms[first_ss+1:]
+
+        # Step 3: validate post-separator structure (clean after AGC has settled)
+        rest     = syms[first_ss + 1:]
         expected = ['LL'] + ['SL'] * (7 - N) + ['SS', 'LL', 'SS', 'LL']
         if len(rest) < len(expected):
             return None
@@ -273,8 +304,15 @@ def run_tests(tx_base, rx_port):
                                   for f in captures]
                     decoded    = [n for n in decoded if n is not None]
                     if not decoded:
-                        proto_ok    = False
-                        proto_label = "  N=? (decode failed)"
+                        proto_ok = False
+                        ht = dev['timing']['hi_thresh_us']
+                        lt = dev['timing']['lo_thresh_us']
+                        p0 = parse_pulses(captures[0])
+                        syms_str = ''.join(
+                            ('S' if h < ht else 'L') + ('S' if l < lt else 'L')
+                            for h, l in p0
+                        )
+                        proto_label = f"  N=? decode failed [{syms_str}]"
                     else:
                         unique = set(decoded)
                         got_N  = decoded[0] if len(unique) == 1 else f"mixed{sorted(unique)}"
