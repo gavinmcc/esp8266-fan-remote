@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gen_config.py — reads devices.json and generates fan_remote/fan_config.h
+gen_config.py — reads model_database.json + devices.json and generates fan_remote/fan_config.h
 
 Run before compiling, or use build.sh which does it automatically.
 """
@@ -26,13 +26,47 @@ def fmt_cmd(c):
     return f"{{{c['N']}, {c['reps']}, {fa}}}"
 
 
+def load_devices(here):
+    with open(os.path.join(here, "model_database.json")) as f:
+        models = {m["model_id"]: m for m in json.load(f)}
+    with open(os.path.join(here, "devices.json")) as f:
+        raw = json.load(f)
+
+    devices = []
+    for dev in raw:
+        model_id = dev["model"]
+        if model_id not in models:
+            sys.exit(f"Unknown model {model_id!r} in devices.json")
+        model = models[model_id]
+
+        merged_cmds = {}
+        for cmd_name, model_cmd in model["commands"].items():
+            cmd = dict(model_cmd)
+            cmd.update(dev.get("commands", {}).get(cmd_name, {}))
+            if "N" not in cmd:
+                sys.exit(
+                    f"Device {dev['name']!r} command {cmd_name!r}: "
+                    f"N not set in model or device (model {model_id!r} requires per-device N)"
+                )
+            merged_cmds[cmd_name] = cmd
+
+        devices.append({
+            "name":     dev["name"],
+            "path":     dev["path"],
+            "protocol": model["protocol"],
+            "freq_mhz": model["freq_mhz"],
+            "timing":   model["timing"],
+            "commands": merged_cmds,
+            "alexa":    dev["alexa"],
+        })
+    return devices
+
+
 def main():
     here     = os.path.dirname(os.path.abspath(__file__))
-    src      = os.path.join(here, "devices.json")
     out_path = os.path.join(here, "fan_remote", "fan_config.h")
 
-    with open(src) as f:
-        devices = json.load(f)
+    devices = load_devices(here)
 
     n = len(devices)
     max_slots = n * 5  # one thunk per device×command

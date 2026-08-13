@@ -1,0 +1,54 @@
+[
+  {
+    "model_id":    "RHINE_UC7070T",
+    "brand":       "Rhine / Hampton Bay",
+    "description": "Hampton Bay ceiling fan replacement remote (UC7070T / UC7078T family, 303.92 MHz)",
+    "notes":       "N values are fixed for all units — no DIP switch addressing in this protocol.",
+    "protocol":    "UC7070T",
+    "freq_mhz":    303.92,
+    "timing": {
+      "short_h":      10,
+      "long_h":       24,
+      "sync0_h":      17,
+      "sync0_l":      14,
+      "short_l":      18,
+      "long_l":       32,
+      "gap":         320,
+      "hi_thresh_us": 350,
+      "lo_thresh_us": 620
+    },
+    "commands": {
+      "hi":    { "N": 0, "reps": 25, "fire_always": false },
+      "med":   { "N": 1, "reps": 25, "fire_always": false },
+      "low":   { "N": 2, "reps": 25, "fire_always": false },
+      "off":   { "N": 4, "reps": 50, "fire_always": true  },
+      "light": { "N": 5, "reps":  4, "fire_always": true  }
+    }
+  },
+  {
+    "model_id":    "SMC_5060_RF",
+    "brand":       "SMC",
+    "description": "SMC 5060RF ceiling fan remote (433.92 MHz)",
+    "notes":       "N values depend on the DIP switch setting on the physical remote. Specify 'N' for each command in devices.json. The mapping below is for DIP switches 1-4 = OFF ON OFF ON.",
+    "protocol":    "SMC5060RF",
+    "freq_mhz":    433.92,
+    "timing": {
+      "short_h":       9,
+      "long_h":       17,
+      "sync0_h":       0,
+      "sync0_l":       0,
+      "short_l":      10,
+      "long_l":       19,
+      "gap":         310,
+      "hi_thresh_us": 380,
+      "lo_thresh_us": 340
+    },
+    "commands": {
+      "hi":    { "N": 4, "reps": 20, "fire_always": false },
+      "med":   { "N": 3, "reps": 20, "fire_always": false },
+      "low":   { "N": 0, "reps": 20, "fire_always": false },
+      "off":   { "N": 5, "reps": 20, "fire_always": true  },
+      "light": { "N": 1, "reps":  4, "fire_always": true  }
+    }
+  }
+]

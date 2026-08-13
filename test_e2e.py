@@ -42,10 +42,31 @@ EXPECTED_REGISTERS = {
 
 
 def load_devices():
-    """Return devices list from devices.json."""
+    """Return merged device list from model_database.json + devices.json."""
     here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "model_database.json")) as f:
+        models = {m["model_id"]: m for m in json.load(f)}
     with open(os.path.join(here, "devices.json")) as f:
-        return json.load(f)
+        raw = json.load(f)
+
+    devices = []
+    for dev in raw:
+        model = models[dev["model"]]
+        merged_cmds = {}
+        for cmd_name, model_cmd in model["commands"].items():
+            cmd = dict(model_cmd)
+            cmd.update(dev.get("commands", {}).get(cmd_name, {}))
+            merged_cmds[cmd_name] = cmd
+        devices.append({
+            "name":     dev["name"],
+            "path":     dev["path"],
+            "protocol": model["protocol"],
+            "freq_mhz": model["freq_mhz"],
+            "timing":   model["timing"],
+            "commands": merged_cmds,
+            "alexa":    dev["alexa"],
+        })
+    return devices
 
 
 def http_get(url, timeout=5):
