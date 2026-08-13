@@ -7,13 +7,13 @@ Replays captured OOK RF codes over HTTP and Alexa (Philips Hue emulation).
 
 | Remote | Frequency | Compatible fans |
 |--------|-----------|-----------------|
-| Rhine UC7070T | 303.92 MHz | **Hampton Bay** and **Harbor Breeze** ceiling fans sold at Home Depot and Lowe's. The UC7070T is a widely available replacement remote for this family. |
+| Rhine UC7070T | 303.92 MHz | **Hampton Bay** (Home Depot) and **Harbor Breeze** (Lowe's) ceiling fans. Both brands are made by King of Fans and share the same RF protocol. The UC7070T is a widely available replacement remote for this family. |
 | SMC-5060-RF | 433.92 MHz | SMC 5060RF ceiling fans (DIP-switch addressed). |
 
-The Hampton Bay / Harbor Breeze family is one of the most common ceiling fan lines
-in North America. If your fan came with a remote that looks like the UC7070T, or if
-the UC7070T is listed as a compatible replacement on Amazon or the manufacturer's site,
-this firmware will very likely work for you.
+Hampton Bay (Home Depot) and Harbor Breeze (Lowe's) are both made by King of Fans and
+share the same RF protocol, making this one of the most common ceiling fan families in
+North America. If your fan came with a remote that looks like the UC7070T, or if the
+UC7070T is listed as a compatible replacement, this firmware will very likely work for you.
 
 The single CC1101 module switches frequency per-command, so multiple fans at different
 frequencies can be controlled from one ESP8266.
