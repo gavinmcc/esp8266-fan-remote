@@ -1,6 +1,9 @@
 # WiFi credentials — copy secrets.h.example to secrets.h and fill in
 fan_remote/secrets.h
 
+# Local device config — copy devices.json.example to devices.json and customise
+devices.json
+
 # Arduino build artifacts
 build/
 *.elf
