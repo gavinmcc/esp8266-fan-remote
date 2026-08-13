@@ -1,18 +1,25 @@
 # esp8266-fan-remote
 
-WiFi-controlled ceiling fan remote using an ESP8266 and CC1101 transceiver.
-Controls two ceiling fans over HTTP and Alexa by replaying captured OOK RF codes:
+This project takes various existing RF remote controlled ceiling light/fans and
+enables them for use in Smart Home systems, such as Alexa by adding a small
+Wifi-enabled controller using an ESP8266 and CC1101 transceiver.
 
-| Room    | Fan model   | Frequency  |
-|---------|-------------|------------|
-| Bedroom | RHINE UC7070T   | 303.92 MHz |
-| Girls   | SMC-5060-RF     | 433.92 MHz |
+Tested models: 
+
+| Fan model   | Frequency  |  Fan Model | 
+|-------------|------------|------------| 
+| RHINE UC7070T   | 303.92 MHz | Hampton Bay AC-552 |
+| SMC-5060-RF     | 433.92 MHz | |
 
 The single CC1101 module switches frequency per-command.
 
 ![Device testing](device_testing.jpg)
 
 *Left to right: the original UC7070T remote, the TX prototype (sends fan commands over WiFi), and the RX prototype (captures raw OOK pulses for protocol analysis).*
+
+The RHINE UC7070T remote control is used for many similar Harbor Breeze ceiling fans/lights sold at US stores such as Lowe's and Home Depot.
+
+https://www.amazon.com/dp/B01GWFJDAY
 
 ## Hardware
 
@@ -69,13 +76,71 @@ sprintf_P(out, PSTR("%02X:%02X:%02X:%02X:%02X:%02X-%02X-00:11"), mac[0],mac[1],m
 
 **This patch must be reapplied after every Espalexa library update.**
 
+## Configuration
+
+Device configuration is split across two files:
+
+### `model_database.json`
+
+Describes each supported fan model — protocol, frequency, timing constants, and default
+command N values. Add an entry here when supporting a new model. This file is shared and
+committed to the repo.
+
+### `devices.json` (local, gitignored)
+
+Lists your specific devices. Each entry names a model from `model_database.json` and
+provides your Alexa device names and URL paths. For models with DIP-switch addressing
+(e.g. SMC_5060_RF) you also supply the N value for each command matching your switch
+setting; for models with fixed N values (e.g. RHINE_UC7070T) no command overrides are
+needed.
+
+Copy `devices.json.example` to `devices.json` and edit it for your installation:
+
+```bash
+cp devices.json.example devices.json
+```
+
+Minimal entry for a fixed-N model (Hampton Bay / Rhine UC7070T):
+
+```json
+{
+  "name":  "Bedroom",
+  "path":  "bedroom",
+  "model": "RHINE_UC7070T",
+  "alexa": {
+    "hi": "Bedroom Fan High", "med": "Bedroom Fan Medium",
+    "low": "Bedroom Fan Low", "off": "Bedroom Fan Off", "light": "Bedroom Light"
+  }
+}
+```
+
+Entry for a DIP-addressed model (SMC 5060RF) — N values depend on your DIP switch
+setting; these are for switches 1–4 = OFF ON OFF ON:
+
+```json
+{
+  "name":  "Girls",
+  "path":  "girls",
+  "model": "SMC_5060_RF",
+  "commands": {
+    "hi": {"N": 4}, "med": {"N": 3}, "low": {"N": 0},
+    "off": {"N": 5}, "light": {"N": 1}
+  },
+  "alexa": {
+    "hi": "Girls Fan High", "med": "Girls Fan Medium",
+    "low": "Girls Fan Low", "off": "Girls Fan Off", "light": "Girls Light"
+  }
+}
+```
+
 ## Setup
 
 1. Copy `fan_remote/secrets.h.example` to `fan_remote/secrets.h` and fill in your WiFi credentials.
-2. Open `fan_remote/fan_remote.ino` in Arduino IDE.
-3. Set board to **Generic ESP8266 Module**.
-4. Flash to the ESP8266.
-5. Open Serial Monitor (115200 baud) — the assigned IP is printed on boot.
+2. Copy `devices.json.example` to `devices.json` and edit for your fans (see Configuration above).
+3. Open `fan_remote/fan_remote.ino` in Arduino IDE.
+4. Set board to **Generic ESP8266 Module**.
+5. Flash to the ESP8266.
+6. Open Serial Monitor (115200 baud) — the assigned IP is printed on boot.
 
 ## HTTP endpoints
 
@@ -85,21 +150,11 @@ Navigate to `http://<ip>/` for the web UI, or call endpoints directly:
 
 | Endpoint          | Action              |
 |-------------------|---------------------|
-| `/bedroom/hi`     | Fan high speed      |
-| `/bedroom/med`    | Fan medium speed    |
-| `/bedroom/low`    | Fan low speed       |
-| `/bedroom/off`    | Fan off             |
-| `/bedroom/light`  | Toggle light on/off |
-
-**Girls fan (433.92 MHz):**
-
-| Endpoint        | Action              |
-|-----------------|---------------------|
-| `/girls/hi`     | Fan high speed      |
-| `/girls/med`    | Fan medium speed    |
-| `/girls/low`    | Fan low speed       |
-| `/girls/off`    | Fan off             |
-| `/girls/light`  | Toggle light on/off |
+| `/<devicename>/hi`     | Fan high speed      |
+| `/<devicename>/med`    | Fan medium speed    |
+| `/<devicename>/low`    | Fan low speed       |
+| `/<devicename>/off`    | Fan off             |
+| `/<devicename>/light`  | Toggle light on/off |
 
 **Shared:**
 
@@ -125,13 +180,8 @@ The firmware exposes ten Alexa devices via Espalexa (Philips Hue bridge emulatio
 | Bedroom Fan Low     | Bedroom fan low      |
 | Bedroom Fan Off     | Bedroom fan off      |
 | Bedroom Light       | Bedroom light toggle |
-| Girls Fan High      | Girls fan high       |
-| Girls Fan Medium    | Girls fan medium     |
-| Girls Fan Low       | Girls fan low        |
-| Girls Fan Off       | Girls fan off        |
-| Girls Light         | Girls light toggle   |
 
-Say *"Alexa, turn on Girls Fan High"*, *"Alexa, turn off Girls Light"*, etc.
+Say *"Alexa, turn on Bedroom Fan High"*, *"Alexa, turn off Bedroom Light"*, etc.
 
 After flashing, say *"Alexa, discover devices"* or use the Alexa app to run device discovery.
 If all commands trigger the same device, recheck that the Espalexa patch above was applied.
@@ -268,14 +318,26 @@ Each command is a 13-pulse, position-encoded frame repeated multiple times with 
 
 Without this, the PA drives full carrier in both the on and off states and no modulation reaches the fan.
 
-## Target fans
+## How to add new remote support
+
+The protocol reverse engineering process is helped enormously by an AI agent, such as Claude Code.
+
+1. Take a breadboard and mount two ESP3266 modules, wire each one to its own CC1101 transceiver.
+2. Determine what frequency your remote works under.  Set the code in capture and fan_remote to use the frequency.
+3. Flash one ESP3266 with the capture/capture.ino (a receiver).  Flash the other esp3266 with fan_remote/fan_remote.ino (the tranmsmitter).
+4. Once both are working, run capture and press each button on the remote. Store the result and pass to the AI.
+5. Give the AI control over both the capture and fan_remote units and allow it
+   to update and reflash until it succeeds in matching the original remote.
+
+
+## Tested fans
 
 See [SPEC.md](SPEC.md) for full protocol details on both fans.
 
-| Room    | Model       | DIP address | Notes |
-|---------|-------------|-------------|-------|
-| Bedroom | RHINE UC7070T | `E7 80 29`         | 303.92 MHz |
-| Girls   | SMC-5060-RF   | `OFF ON OFF ON` (sw 1–4) | 433.92 MHz |
+| Model       | DIP address | Notes |
+|-------------|-------------|-------|
+| RHINE UC7070T | `E7 80 29`         | 303.92 MHz |
+| SMC-5060-RF   | `OFF ON OFF ON` (sw 1–4) | 433.92 MHz |
 
 > **DIP switch encoding:** The address is not an explicit field in the frame. Changing the DIP
 > switch changes which N value the remote transmits for each command — the receiver only responds
