@@ -1,25 +1,26 @@
 # esp8266-fan-remote
 
-This project takes various existing RF remote controlled ceiling light/fans and
-enables them for use in Smart Home systems, such as Alexa by adding a small
-Wifi-enabled controller using an ESP8266 and CC1101 transceiver.
+WiFi and Alexa control for RF ceiling fans, using an ESP8266 and CC1101 transceiver.
+Replays captured OOK RF codes over HTTP and Alexa (Philips Hue emulation).
 
-Tested models: 
+## Supported fans
 
-| Fan model   | Frequency  |  Fan Model | 
-|-------------|------------|------------| 
-| RHINE UC7070T   | 303.92 MHz | Hampton Bay AC-552 |
-| SMC-5060-RF     | 433.92 MHz | |
+| Remote | Frequency | Compatible fans |
+|--------|-----------|-----------------|
+| Rhine UC7070T | 303.92 MHz | **Hampton Bay** and **Harbor Breeze** ceiling fans sold at Home Depot and Lowe's. The UC7070T is a widely available replacement remote for this family. |
+| SMC-5060-RF | 433.92 MHz | SMC 5060RF ceiling fans (DIP-switch addressed). |
 
-The single CC1101 module switches frequency per-command.
+The Hampton Bay / Harbor Breeze family is one of the most common ceiling fan lines
+in North America. If your fan came with a remote that looks like the UC7070T, or if
+the UC7070T is listed as a compatible replacement on Amazon or the manufacturer's site,
+this firmware will very likely work for you.
+
+The single CC1101 module switches frequency per-command, so multiple fans at different
+frequencies can be controlled from one ESP8266.
 
 ![Device testing](device_testing.jpg)
 
 *Left to right: the original UC7070T remote, the TX prototype (sends fan commands over WiFi), and the RX prototype (captures raw OOK pulses for protocol analysis).*
-
-The RHINE UC7070T remote control is used for many similar Harbor Breeze ceiling fans/lights sold at US stores such as Lowe's and Home Depot.
-
-https://www.amazon.com/dp/B01GWFJDAY
 
 ## Hardware
 
