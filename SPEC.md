@@ -147,9 +147,11 @@ Each rep is 838 bits. The firmware sends more reps than the original remote to i
 | MED     | 25   | 20,950     | ~525 ms |
 | LOW     | 25   | 20,950     | ~525 ms |
 | OFF     | 50   | 41,900     | ~1050 ms |
-| LIGHT   | 4    | 3,352      | ~84 ms  |
+| LIGHT   | 10   | 8,380      | ~210 ms |
 
-OFF uses more reps for reliability. LIGHT uses fewer — more than ~5 reps triggers the dimmer instead of toggling.
+OFF uses more reps for reliability. LIGHT was originally set to 4 reps on the assumption
+that more would trigger the dimmer, but 10 reps works reliably without dimming on the
+tested unit. The dimmer threshold may be higher than initially estimated, or unit-dependent.
 
 ## TX Sequence
 

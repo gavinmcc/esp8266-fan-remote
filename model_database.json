@@ -22,7 +22,7 @@
       "med":   { "N": 1, "reps": 25, "fire_always": false },
       "low":   { "N": 2, "reps": 25, "fire_always": false },
       "off":   { "N": 4, "reps": 50, "fire_always": true  },
-      "light": { "N": 5, "reps":  4, "fire_always": true  }
+      "light": { "N": 5, "reps": 10, "fire_always": true  }
     }
   },
   {
