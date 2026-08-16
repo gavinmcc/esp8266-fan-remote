@@ -197,6 +197,13 @@ struct AlexaEntry { int dev; int cmd; };
 static AlexaEntry g_alexaTable[ALEXA_SLOTS];
 static int        g_alexaCount = 0;
 
+// Pending command queue (one slot) — filled by dispatchAlexa(), drained in loop().
+// Alexa has a short response timeout; queuing lets Espalexa reply immediately
+// and transmit RF on the next loop iteration after the response has gone out.
+struct PendingCmd { int fanIdx; int N; int reps; char tag[32]; };
+static bool        g_cmdPending = false;
+static PendingCmd  g_pending;
+
 void dispatchAlexa(int idx, uint8_t b) {
     const AlexaEntry& e   = g_alexaTable[idx];
     const FanDevice&  fan = FANS[e.dev];
@@ -205,9 +212,11 @@ void dispatchAlexa(int idx, uint8_t b) {
     };
     const FanCmd& cmd = *cmds[e.cmd];
     if (cmd.fire_always || b) {
-        char tag[32];
-        snprintf(tag, sizeof(tag), "ALEXA:%s:%s", fan.name, CMD_LABELS[e.cmd]);
-        sendCommand(fan, cmd.N, cmd.reps, tag);
+        g_pending.fanIdx = e.dev;
+        g_pending.N      = cmd.N;
+        g_pending.reps   = cmd.reps;
+        snprintf(g_pending.tag, sizeof(g_pending.tag), "ALEXA:%s:%s", fan.name, CMD_LABELS[e.cmd]);
+        g_cmdPending = true;
     }
 }
 
@@ -544,5 +553,9 @@ void setup() {
 }
 
 void loop() {
+    if (g_cmdPending) {
+        g_cmdPending = false;
+        sendCommand(FANS[g_pending.fanIdx], g_pending.N, g_pending.reps, g_pending.tag);
+    }
     espalexa.loop();
 }
