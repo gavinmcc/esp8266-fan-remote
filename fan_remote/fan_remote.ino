@@ -204,6 +204,12 @@ struct PendingCmd { int fanIdx; int N; int reps; char tag[32]; };
 static bool        g_cmdPending = false;
 static PendingCmd  g_pending;
 
+// Debounce: Alexa sometimes sends two events for one voice command (e.g. a paired
+// on+off brightness sequence). Track the last dispatched slot and ignore repeats
+// within 2 seconds so toggle commands don't double-fire.
+static int      g_lastAlexaSlot = -1;
+static uint32_t g_lastAlexaMs   = 0;
+
 void dispatchAlexa(int idx, uint8_t b) {
     const AlexaEntry& e   = g_alexaTable[idx];
     const FanDevice&  fan = FANS[e.dev];
@@ -212,6 +218,10 @@ void dispatchAlexa(int idx, uint8_t b) {
     };
     const FanCmd& cmd = *cmds[e.cmd];
     if (cmd.fire_always || b) {
+        uint32_t now = millis();
+        if (idx == g_lastAlexaSlot && now - g_lastAlexaMs < 2000) return;
+        g_lastAlexaSlot = idx;
+        g_lastAlexaMs   = now;
         g_pending.fanIdx = e.dev;
         g_pending.N      = cmd.N;
         g_pending.reps   = cmd.reps;
